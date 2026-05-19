@@ -11,8 +11,15 @@ from solar_tariff_roller.models.project import (
     TariffParams,
     TaxParams,
 )
+from solar_tariff_roller.models.results import (
+    AnnualProjection,
+    ProjectCashflowResult,
+    SensitivityAnalysisResult,
+    SensitivityPoint,
+)
 
 __all__ = [
+    "AnnualProjection",
     "CalculationContext",
     "ConsumptionParams",
     "CostParams",
@@ -20,6 +27,9 @@ __all__ = [
     "GenerationParams",
     "MonthlyGenerationRecord",
     "ProjectProfile",
+    "ProjectCashflowResult",
+    "SensitivityAnalysisResult",
+    "SensitivityPoint",
     "TariffParams",
     "TaxParams",
 ]

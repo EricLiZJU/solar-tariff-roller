@@ -82,6 +82,10 @@ class CostParamsInput(BaseModel):
     annual_rent_10k_cny: float = Field(default=0.0, ge=0, description="年租金 万元")
     annual_om_10k_cny: float = Field(default=0.0, ge=0, description="年运维费 万元")
     annual_insurance_10k_cny: float = Field(default=0.0, ge=0, description="年保险费 万元")
+    replacement_costs_10k_cny_by_year: dict[int, float] = Field(
+        default_factory=dict,
+        description="按年份记录的更换或追加建造成本",
+    )
 
 
 class TaxParamsInput(BaseModel):
@@ -90,6 +94,18 @@ class TaxParamsInput(BaseModel):
     output_vat_rate: float = Field(default=0.13, ge=0, le=1, description="销项增值税率")
     input_vat_rate: float = Field(default=0.06, ge=0, le=1, description="进项增值税率")
     surcharge_rate: float = Field(default=0.12, ge=0, le=1, description="附加税比例")
+    capex_input_vat_primary_rate: float = Field(default=0.13, ge=0, le=1, description="建造成本主税率")
+    capex_input_vat_secondary_rate: float = Field(default=0.09, ge=0, le=1, description="建造成本次税率")
+    capex_input_vat_primary_ratio: float = Field(default=0.7, ge=0, le=1, description="建造成本主税率占比")
+    capex_input_vat_secondary_ratio: float = Field(default=0.3, ge=0, le=1, description="建造成本次税率占比")
+
+    @model_validator(mode="after")
+    def validate_capex_vat_ratios(self) -> "TaxParamsInput":
+        total_ratio = self.capex_input_vat_primary_ratio + self.capex_input_vat_secondary_ratio
+        if abs(total_ratio - 1.0) > 1e-9:
+            raise ValueError("capex input VAT ratios must sum to 1")
+
+        return self
 
 
 class FinanceParamsInput(BaseModel):

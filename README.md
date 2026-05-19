@@ -51,3 +51,18 @@ scripts/         开发辅助脚本
 - `monthly_records`: 历史月度运营数据
 
 对应字段清单见 [docs/input_spec.md](/Users/lihongyang/VSCodeProjects/solar-tariff-roller/docs/input_spec.md)。
+
+## Web 页面
+
+本项目已经提供一个简单 Web 表单用于目标 IRR 反算。
+
+推荐启动命令：
+
+```bash
+PYTHONPATH=src uvicorn solar_tariff_roller.api.app:create_app --factory --host 127.0.0.1 --port 9000
+```
+
+启动后可访问：
+
+- `http://127.0.0.1:9000/`
+- `http://127.0.0.1:9000/docs`

@@ -57,6 +57,7 @@ class CostParams:
     annual_rent_10k_cny: float = 0.0
     annual_om_10k_cny: float = 0.0
     annual_insurance_10k_cny: float = 0.0
+    replacement_costs_10k_cny_by_year: dict[int, float] = field(default_factory=dict)
 
 
 @dataclass(slots=True)
@@ -66,6 +67,10 @@ class TaxParams:
     output_vat_rate: float = 0.13
     input_vat_rate: float = 0.06
     surcharge_rate: float = 0.12
+    capex_input_vat_primary_rate: float = 0.13
+    capex_input_vat_secondary_rate: float = 0.09
+    capex_input_vat_primary_ratio: float = 0.7
+    capex_input_vat_secondary_ratio: float = 0.3
 
 
 @dataclass(slots=True)

@@ -1,0 +1,37 @@
+[project]
+name = "solar-tariff-roller"
+version = "0.1.0"
+description = "Distributed PV consumption tariff calculator"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  "pandas>=2.2.0",
+  "numpy>=1.26.0",
+  "scipy>=1.13.0",
+  "openpyxl>=3.1.0",
+  "pydantic>=2.7.0",
+]
+
+[project.optional-dependencies]
+api = [
+  "fastapi>=0.115.0",
+  "uvicorn>=0.30.0",
+]
+dev = [
+  "pytest>=8.0.0",
+  "ruff>=0.6.0",
+]
+
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]

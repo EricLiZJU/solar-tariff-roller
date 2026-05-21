@@ -9,6 +9,7 @@ from solar_tariff_roller.services.calc import (
     run_calculation,
 )
 from solar_tariff_roller.services.exporter import export_calculation_bundle
+from solar_tariff_roller.services.parser import upsert_monthly_update
 from solar_tariff_roller.services.parser.excel_reader import load_project_workbook
 from solar_tariff_roller.services.solver import solve_tariff_by_target_irr
 
@@ -89,6 +90,38 @@ def test_load_project_workbook_merges_two_excel_sources(tmp_path) -> None:
     ]
 
 
+def test_load_project_workbook_applies_monthly_updates_and_refreshes_ratio(tmp_path) -> None:
+    calculation_path = tmp_path / "【测算表】测试项目.xlsx"
+    station_path = tmp_path / "电站统计.xlsx"
+    monthly_update_dir = tmp_path / "monthly_updates"
+
+    _build_calculation_workbook(calculation_path)
+    _build_station_workbook(station_path)
+    upsert_monthly_update(
+        calculation_path,
+        station_path,
+        {
+            "period_label": "2024-12",
+            "generation_10k_kwh": 10.0,
+            "self_consumed_10k_kwh": 9.5,
+            "exported_10k_kwh": 0.5,
+        },
+        base_dir=monthly_update_dir,
+    )
+
+    payload = load_project_workbook(
+        calculation_path,
+        station_path,
+        monthly_update_dir=monthly_update_dir,
+    )
+
+    assert payload.monthly_records[-1].period_label == "2024-12"
+    assert payload.monthly_records[-1].self_consumed_10k_kwh == 9.5
+    assert payload.monthly_records[-1].self_consumption_ratio == 0.95
+    assert payload.consumption.monthly_self_consumption_ratios[-1] == 0.95
+    assert round(payload.consumption.self_consumption_ratio, 6) == 0.714286
+
+
 def test_first_pass_calculation_engine_builds_cashflow() -> None:
     payload = CalculationInput(
         project={
@@ -167,6 +200,15 @@ def test_export_calculation_bundle_writes_json_and_excel(tmp_path) -> None:
             "annual_om_10k_cny": 3.633175,
             "annual_insurance_10k_cny": 0.34442499,
         },
+        monthly_records=[
+            {
+                "period_label": "2024-01",
+                "generation_10k_kwh": 10.0,
+                "self_consumed_10k_kwh": 8.0,
+                "exported_10k_kwh": 2.0,
+                "self_consumption_ratio": 0.8,
+            }
+        ],
     )
 
     paths = export_calculation_bundle(
@@ -189,12 +231,14 @@ def test_export_calculation_bundle_writes_json_and_excel(tmp_path) -> None:
     assert json_payload["target_irr_solution"]["target_irr"] == 0.06
     assert json_payload["sensitivity_analysis"]["parameter_name"] == "tariff.consumer_tariff"
     assert len(json_payload["sensitivity_analysis"]["values"]) == 2
+    assert len(json_payload["input"]["monthly_records"]) == 1
 
     workbook = load_workbook(paths["excel"], data_only=True)
-    assert workbook.sheetnames == ["汇总", "年度测算", "反算结果", "敏感性分析", "输入参数"]
+    assert workbook.sheetnames == ["汇总", "年度测算", "反算结果", "敏感性分析", "月度数据", "输入参数"]
     assert workbook["汇总"]["A1"].value == "测算结果汇总"
     assert workbook["年度测算"]["A2"].value == 1
     assert workbook["敏感性分析"]["A1"].value == "敏感性分析结果"
+    assert workbook["月度数据"]["A1"].value == "月度真实数据"
 
 
 def test_solve_tariff_by_target_irr_recovers_current_tariff() -> None:

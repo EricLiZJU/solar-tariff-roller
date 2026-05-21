@@ -12,6 +12,13 @@ from openpyxl import load_workbook
 from openpyxl.utils.datetime import from_excel
 
 from solar_tariff_roller.schemas.input import CalculationInput, MonthlyGenerationRecordInput
+from solar_tariff_roller.services.parser.monthly_updates import (
+    DEFAULT_MONTHLY_UPDATE_DIR,
+    calculate_recent_monthly_ratios,
+    calculate_recent_self_consumption_ratio,
+    load_monthly_updates,
+    merge_monthly_records,
+)
 
 
 PROJECT_BASE_SHEET = "项目基础数据"
@@ -38,6 +45,7 @@ class ParsedStationData:
 def load_project_workbook(
     calculation_workbook_path: str | Path,
     station_workbook_path: str | Path,
+    monthly_update_dir: str | Path = DEFAULT_MONTHLY_UPDATE_DIR,
 ) -> CalculationInput:
     """Load both current Excel workbooks and merge them into one calculation input."""
 
@@ -46,6 +54,9 @@ def load_project_workbook(
 
     calculation_data = parse_calculation_workbook(calculation_path)
     station_data = parse_station_workbook(station_path)
+    monthly_updates = load_monthly_updates(calculation_path, station_path, monthly_update_dir)
+    has_monthly_updates = bool(monthly_updates)
+    station_data.monthly_records = merge_monthly_records(station_data.monthly_records, monthly_updates)
 
     calculation_data["project"].update(
         {
@@ -60,19 +71,18 @@ def load_project_workbook(
     if calculation_data["project"]["capacity_mwp"] <= 0 and station_data.capacity_mwp:
         calculation_data["project"]["capacity_mwp"] = station_data.capacity_mwp
 
-    if calculation_data["consumption"]["self_consumption_ratio"] == 0 and station_data.average_self_consumption_ratio:
+    recent_self_consumption_ratio = calculate_recent_self_consumption_ratio(station_data.monthly_records)
+    if has_monthly_updates and recent_self_consumption_ratio is not None:
+        calculation_data["consumption"]["self_consumption_ratio"] = recent_self_consumption_ratio
+    elif calculation_data["consumption"]["self_consumption_ratio"] == 0 and station_data.average_self_consumption_ratio:
         calculation_data["consumption"]["self_consumption_ratio"] = station_data.average_self_consumption_ratio
 
     calculation_data["consumption"]["feasibility_self_consumption_ratio"] = (
         station_data.feasibility_self_consumption_ratio
     )
-
-    latest_12_ratios = [
-        record.self_consumption_ratio
-        for record in station_data.monthly_records
-        if record.self_consumption_ratio is not None
-    ][-12:]
-    calculation_data["consumption"]["monthly_self_consumption_ratios"] = latest_12_ratios
+    calculation_data["consumption"]["monthly_self_consumption_ratios"] = calculate_recent_monthly_ratios(
+        station_data.monthly_records
+    )
 
     if calculation_data["tariff"]["consumer_tariff"] == 0 and station_data.average_consumer_tariff is not None:
         calculation_data["tariff"]["consumer_tariff"] = station_data.average_consumer_tariff

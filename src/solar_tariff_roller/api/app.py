@@ -8,9 +8,15 @@ from pathlib import Path
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import HTMLResponse, JSONResponse
 
+from solar_tariff_roller.schemas.input import MonthlyGenerationRecordInput
 from solar_tariff_roller.services.calc import analyze_sensitivity, generate_sensitivity_values
 from solar_tariff_roller.services.exporter import export_calculation_bundle
-from solar_tariff_roller.services.parser import load_project_workbook
+from solar_tariff_roller.services.parser import (
+    build_monthly_updates_path,
+    load_monthly_updates,
+    load_project_workbook,
+    upsert_monthly_update,
+)
 from solar_tariff_roller.services.solver import solve_tariff_by_target_irr
 
 DEFAULT_CALCULATION_WORKBOOK = (
@@ -51,18 +57,10 @@ def create_app() -> FastAPI:
         sensitivity_step: float = Query(0.04, gt=0),
     ) -> str:
         try:
-            payload = load_project_workbook(Path(calculation_workbook), Path(station_workbook))
-            solved = solve_tariff_by_target_irr(payload, target_irr=target_irr)
-            sensitivity_values = generate_sensitivity_values(
-                sensitivity_start,
-                sensitivity_stop,
-                sensitivity_step,
-            )
-            sensitivity = analyze_sensitivity(payload, sensitivity_parameter, sensitivity_values)
-            exports = export_calculation_bundle(
-                payload,
-                reference_workbook_path=Path(calculation_workbook),
+            context = _build_workbench_context(
                 target_irr=target_irr,
+                calculation_workbook=calculation_workbook,
+                station_workbook=station_workbook,
                 sensitivity_parameter=sensitivity_parameter,
                 sensitivity_start=sensitivity_start,
                 sensitivity_stop=sensitivity_stop,
@@ -79,145 +77,8 @@ def create_app() -> FastAPI:
                 sensitivity_stop=sensitivity_stop,
                 sensitivity_step=sensitivity_step,
             )
-
-        sensitivity_rows = "".join(
-            f"""
-            <tr>
-              <td>{point.parameter_value:.6f}</td>
-              <td>{point.project_npv_10k_cny:.4f}</td>
-              <td>{'' if point.project_irr is None else f'{point.project_irr:.6f}'}</td>
-              <td>{point.cumulative_cashflow_10k_cny:.4f}</td>
-              <td>{point.discounted_consumer_tariff:.6f}</td>
-            </tr>
-            """
-            for point in sensitivity.points
-        )
-        npv_chart_svg = _build_line_chart_svg(
-            [point.parameter_value for point in sensitivity.points],
-            [point.project_npv_10k_cny for point in sensitivity.points],
-            "NPV(万元)",
-        )
-        irr_chart_svg = _build_bar_chart_svg(
-            [point.parameter_value for point in sensitivity.points],
-            [0.0 if point.project_irr is None else point.project_irr for point in sensitivity.points],
-            "IRR",
-        )
-
-        result_html = f"""
-        <section class="results-stack">
-          <section class="card result spotlight">
-            <div class="section-head">
-              <div>
-                <p class="eyebrow">Solve Result</p>
-                <h2>反算结果</h2>
-              </div>
-              <span class="badge">IRR 已咬合</span>
-            </div>
-            <div class="metric-grid">
-              <article class="metric primary">
-                <span>目标 IRR</span>
-                <strong>{solved.target_irr:.6f}</strong>
-              </article>
-              <article class="metric accent">
-                <span>用户侧综合电价</span>
-                <strong>{solved.solved_consumer_tariff:.6f}</strong>
-                <em>元/kWh</em>
-              </article>
-              <article class="metric accent">
-                <span>折后消纳电价</span>
-                <strong>{solved.solved_discounted_consumer_tariff:.6f}</strong>
-                <em>元/kWh</em>
-              </article>
-              <article class="metric">
-                <span>校验 NPV</span>
-                <strong>{solved.solved_npv_10k_cny:.6f}</strong>
-                <em>万元</em>
-              </article>
-              <article class="metric">
-                <span>校验 IRR</span>
-                <strong>{solved.solved_project_irr:.6f}</strong>
-              </article>
-            </div>
-          </section>
-          <section class="two-col">
-            <section class="card">
-              <div class="section-head">
-                <div>
-                  <p class="eyebrow">Project Snapshot</p>
-                  <h2>项目概览</h2>
-                </div>
-              </div>
-              <div class="mini-grid">
-                <div><span>项目名称</span><strong>{escape(payload.project.project_name)}</strong></div>
-                <div><span>电站名称</span><strong>{escape(payload.project.station_name or "-")}</strong></div>
-                <div><span>装机容量</span><strong>{payload.project.capacity_mwp:.6f} MWp</strong></div>
-                <div><span>当前折现率</span><strong>{payload.finance.discount_rate:.6f}</strong></div>
-              </div>
-            </section>
-            <section class="card">
-              <div class="section-head">
-                <div>
-                  <p class="eyebrow">Export Files</p>
-                  <h2>导出结果</h2>
-                </div>
-              </div>
-              <div class="path-list">
-                <div>
-                  <span>JSON 文件</span>
-                  <code>{escape(str(exports["json"]))}</code>
-                </div>
-                <div>
-                  <span>Excel 文件</span>
-                  <code>{escape(str(exports["excel"]))}</code>
-                </div>
-              </div>
-            </section>
-          </section>
-          <section class="card">
-            <div class="section-head">
-              <div>
-                <p class="eyebrow">Sensitivity Analysis</p>
-                <h2>敏感性分析</h2>
-              </div>
-              <span class="badge">{escape(SENSITIVITY_OPTIONS.get(sensitivity_parameter, sensitivity_parameter))}</span>
-            </div>
-            <div class="chart-grid">
-              <section class="chart-card">
-                <div class="chart-head">
-                  <h3>NPV 折线图</h3>
-                  <p>观察参数变化对净现值的影响趋势</p>
-                </div>
-                {npv_chart_svg}
-              </section>
-              <section class="chart-card">
-                <div class="chart-head">
-                  <h3>IRR 柱状图</h3>
-                  <p>观察参数变化对 IRR 的抬升或压缩</p>
-                </div>
-                {irr_chart_svg}
-              </section>
-            </div>
-            <div class="table-wrap">
-              <table>
-                <thead>
-                  <tr>
-                    <th>参数值</th>
-                    <th>NPV(万元)</th>
-                    <th>IRR</th>
-                    <th>累计现金流(万元)</th>
-                    <th>折后用户侧电价(元/kWh)</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {sensitivity_rows}
-                </tbody>
-              </table>
-            </div>
-          </section>
-        </section>
-        """
         return _render_page(
-            result_html=result_html,
+            result_html=_render_result_html(context),
             target_irr=target_irr,
             calculation_workbook=calculation_workbook,
             station_workbook=station_workbook,
@@ -225,6 +86,77 @@ def create_app() -> FastAPI:
             sensitivity_start=sensitivity_start,
             sensitivity_stop=sensitivity_stop,
             sensitivity_step=sensitivity_step,
+        )
+
+    @app.get("/update-monthly", response_class=HTMLResponse)
+    def update_monthly_page(
+        target_irr: float = Query(..., ge=0, le=1),
+        calculation_workbook: str = Query(DEFAULT_CALCULATION_WORKBOOK),
+        station_workbook: str = Query(DEFAULT_STATION_WORKBOOK),
+        sensitivity_parameter: str = Query("tariff.consumer_tariff"),
+        sensitivity_start: float = Query(0.68),
+        sensitivity_stop: float = Query(0.76),
+        sensitivity_step: float = Query(0.04, gt=0),
+        period_label: str = Query(...),
+        generation_10k_kwh: float = Query(..., ge=0),
+        self_consumed_10k_kwh: float = Query(..., ge=0),
+        exported_10k_kwh: float = Query(..., ge=0),
+    ) -> str:
+        try:
+            record = MonthlyGenerationRecordInput(
+                period_label=period_label,
+                generation_10k_kwh=generation_10k_kwh,
+                self_consumed_10k_kwh=self_consumed_10k_kwh,
+                exported_10k_kwh=exported_10k_kwh,
+            )
+            store_path = upsert_monthly_update(
+                Path(calculation_workbook),
+                Path(station_workbook),
+                record,
+            )
+            context = _build_workbench_context(
+                target_irr=target_irr,
+                calculation_workbook=calculation_workbook,
+                station_workbook=station_workbook,
+                sensitivity_parameter=sensitivity_parameter,
+                sensitivity_start=sensitivity_start,
+                sensitivity_stop=sensitivity_stop,
+                sensitivity_step=sensitivity_step,
+            )
+            success = (
+                f"已保存 {period_label} 的月度真实数据，并重新完成测算。"
+                f" 当前更新文件: {store_path}"
+            )
+        except Exception as exc:  # pragma: no cover - UI fallback
+            return _render_page(
+                error=str(exc),
+                target_irr=target_irr,
+                calculation_workbook=calculation_workbook,
+                station_workbook=station_workbook,
+                sensitivity_parameter=sensitivity_parameter,
+                sensitivity_start=sensitivity_start,
+                sensitivity_stop=sensitivity_stop,
+                sensitivity_step=sensitivity_step,
+                update_period_label=period_label,
+                update_generation_10k_kwh=generation_10k_kwh,
+                update_self_consumed_10k_kwh=self_consumed_10k_kwh,
+                update_exported_10k_kwh=exported_10k_kwh,
+            )
+
+        return _render_page(
+            result_html=_render_result_html(context),
+            success=success,
+            target_irr=target_irr,
+            calculation_workbook=calculation_workbook,
+            station_workbook=station_workbook,
+            sensitivity_parameter=sensitivity_parameter,
+            sensitivity_start=sensitivity_start,
+            sensitivity_stop=sensitivity_stop,
+            sensitivity_step=sensitivity_step,
+            update_period_label=period_label,
+            update_generation_10k_kwh=generation_10k_kwh,
+            update_self_consumed_10k_kwh=self_consumed_10k_kwh,
+            update_exported_10k_kwh=exported_10k_kwh,
         )
 
     @app.get("/api/solve")
@@ -238,18 +170,10 @@ def create_app() -> FastAPI:
         sensitivity_step: float = Query(0.04, gt=0),
     ) -> JSONResponse:
         try:
-            payload = load_project_workbook(Path(calculation_workbook), Path(station_workbook))
-            solved = solve_tariff_by_target_irr(payload, target_irr=target_irr)
-            sensitivity_values = generate_sensitivity_values(
-                sensitivity_start,
-                sensitivity_stop,
-                sensitivity_step,
-            )
-            sensitivity = analyze_sensitivity(payload, sensitivity_parameter, sensitivity_values)
-            exports = export_calculation_bundle(
-                payload,
-                reference_workbook_path=Path(calculation_workbook),
+            context = _build_workbench_context(
                 target_irr=target_irr,
+                calculation_workbook=calculation_workbook,
+                station_workbook=station_workbook,
                 sensitivity_parameter=sensitivity_parameter,
                 sensitivity_start=sensitivity_start,
                 sensitivity_stop=sensitivity_stop,
@@ -258,6 +182,10 @@ def create_app() -> FastAPI:
         except Exception as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
+        solved = context["solved"]
+        sensitivity = context["sensitivity"]
+        exports = context["exports"]
+        payload = context["payload"]
         return JSONResponse(
             {
                 "target_irr": solved.target_irr,
@@ -267,6 +195,13 @@ def create_app() -> FastAPI:
                 "solved_project_irr": solved.solved_project_irr,
                 "json_export_path": str(exports["json"]),
                 "excel_export_path": str(exports["excel"]),
+                "monthly_update_store_path": str(context["update_store_path"]),
+                "monthly_updates_count": len(context["persisted_updates"]),
+                "effective_self_consumption_ratio": payload.consumption.self_consumption_ratio,
+                "recent_monthly_records": [
+                    record.model_dump()
+                    for record in payload.monthly_records[-12:]
+                ],
                 "sensitivity_analysis": {
                     "parameter_name": sensitivity.parameter_name,
                     "values": [
@@ -286,9 +221,244 @@ def create_app() -> FastAPI:
     return app
 
 
+def _build_workbench_context(
+    *,
+    target_irr: float,
+    calculation_workbook: str,
+    station_workbook: str,
+    sensitivity_parameter: str,
+    sensitivity_start: float,
+    sensitivity_stop: float,
+    sensitivity_step: float,
+) -> dict[str, object]:
+    """Run the full workbench pipeline and return render-ready context."""
+
+    calculation_path = Path(calculation_workbook)
+    station_path = Path(station_workbook)
+    payload = load_project_workbook(calculation_path, station_path)
+    solved = solve_tariff_by_target_irr(payload, target_irr=target_irr)
+    sensitivity_values = generate_sensitivity_values(
+        sensitivity_start,
+        sensitivity_stop,
+        sensitivity_step,
+    )
+    sensitivity = analyze_sensitivity(payload, sensitivity_parameter, sensitivity_values)
+    exports = export_calculation_bundle(
+        payload,
+        reference_workbook_path=calculation_path,
+        target_irr=target_irr,
+        sensitivity_parameter=sensitivity_parameter,
+        sensitivity_start=sensitivity_start,
+        sensitivity_stop=sensitivity_stop,
+        sensitivity_step=sensitivity_step,
+    )
+    update_store_path = build_monthly_updates_path(calculation_path, station_path)
+    persisted_updates = load_monthly_updates(calculation_path, station_path)
+    return {
+        "payload": payload,
+        "solved": solved,
+        "sensitivity": sensitivity,
+        "exports": exports,
+        "update_store_path": update_store_path,
+        "persisted_updates": persisted_updates,
+    }
+
+
+def _render_result_html(context: dict[str, object]) -> str:
+    """Build the result area for solve and update pages."""
+
+    payload = context["payload"]
+    solved = context["solved"]
+    sensitivity = context["sensitivity"]
+    exports = context["exports"]
+    update_store_path = context["update_store_path"]
+    persisted_updates = context["persisted_updates"]
+
+    sensitivity_rows = "".join(
+        f"""
+        <tr>
+          <td>{point.parameter_value:.6f}</td>
+          <td>{point.project_npv_10k_cny:.4f}</td>
+          <td>{'' if point.project_irr is None else f'{point.project_irr:.6f}'}</td>
+          <td>{point.cumulative_cashflow_10k_cny:.4f}</td>
+          <td>{point.discounted_consumer_tariff:.6f}</td>
+        </tr>
+        """
+        for point in sensitivity.points
+    )
+    monthly_rows = "".join(
+        f"""
+        <tr>
+          <td>{escape(record.period_label)}</td>
+          <td>{'' if record.generation_10k_kwh is None else f'{record.generation_10k_kwh:.4f}'}</td>
+          <td>{'' if record.self_consumed_10k_kwh is None else f'{record.self_consumed_10k_kwh:.4f}'}</td>
+          <td>{'' if record.exported_10k_kwh is None else f'{record.exported_10k_kwh:.4f}'}</td>
+          <td>{'' if record.self_consumption_ratio is None else f'{record.self_consumption_ratio:.4%}'}</td>
+        </tr>
+        """
+        for record in payload.monthly_records[-12:]
+    )
+    npv_chart_svg = _build_line_chart_svg(
+        [point.parameter_value for point in sensitivity.points],
+        [point.project_npv_10k_cny for point in sensitivity.points],
+        "NPV(万元)",
+    )
+    irr_chart_svg = _build_bar_chart_svg(
+        [point.parameter_value for point in sensitivity.points],
+        [0.0 if point.project_irr is None else point.project_irr for point in sensitivity.points],
+        "IRR",
+    )
+
+    return f"""
+    <section class="results-stack">
+      <section class="card result spotlight">
+        <div class="section-head">
+          <div>
+            <p class="eyebrow">Solve Result</p>
+            <h2>反算结果</h2>
+          </div>
+          <span class="badge">IRR 已咬合</span>
+        </div>
+        <div class="metric-grid">
+          <article class="metric primary">
+            <span>目标 IRR</span>
+            <strong>{solved.target_irr:.6f}</strong>
+          </article>
+          <article class="metric accent">
+            <span>用户侧综合电价</span>
+            <strong>{solved.solved_consumer_tariff:.6f}</strong>
+            <em>元/kWh</em>
+          </article>
+          <article class="metric accent">
+            <span>折后消纳电价</span>
+            <strong>{solved.solved_discounted_consumer_tariff:.6f}</strong>
+            <em>元/kWh</em>
+          </article>
+          <article class="metric">
+            <span>校验 NPV</span>
+            <strong>{solved.solved_npv_10k_cny:.6f}</strong>
+            <em>万元</em>
+          </article>
+          <article class="metric">
+            <span>校验 IRR</span>
+            <strong>{solved.solved_project_irr:.6f}</strong>
+          </article>
+        </div>
+      </section>
+      <section class="two-col">
+        <section class="card">
+          <div class="section-head">
+            <div>
+              <p class="eyebrow">Project Snapshot</p>
+              <h2>项目概览</h2>
+            </div>
+          </div>
+          <div class="mini-grid">
+            <div><span>项目名称</span><strong>{escape(payload.project.project_name)}</strong></div>
+            <div><span>电站名称</span><strong>{escape(payload.project.station_name or "-")}</strong></div>
+            <div><span>装机容量</span><strong>{payload.project.capacity_mwp:.6f} MWp</strong></div>
+            <div><span>当前折现率</span><strong>{payload.finance.discount_rate:.6f}</strong></div>
+            <div><span>生效自用比例</span><strong>{payload.consumption.self_consumption_ratio:.4%}</strong></div>
+            <div><span>月度更新条数</span><strong>{len(persisted_updates)}</strong></div>
+          </div>
+        </section>
+        <section class="card">
+          <div class="section-head">
+            <div>
+              <p class="eyebrow">Export Files</p>
+              <h2>导出结果</h2>
+            </div>
+          </div>
+          <div class="path-list">
+            <div>
+              <span>JSON 文件</span>
+              <code>{escape(str(exports["json"]))}</code>
+            </div>
+            <div>
+              <span>Excel 文件</span>
+              <code>{escape(str(exports["excel"]))}</code>
+            </div>
+            <div>
+              <span>月度更新文件</span>
+              <code>{escape(str(update_store_path))}</code>
+            </div>
+          </div>
+        </section>
+      </section>
+      <section class="card">
+        <div class="section-head">
+          <div>
+            <p class="eyebrow">Monthly Actuals</p>
+            <h2>最近 12 个月真实数据</h2>
+          </div>
+          <span class="badge">更新后自动重算</span>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>月份</th>
+                <th>发电量(万kWh)</th>
+                <th>自用电量(万kWh)</th>
+                <th>上网电量(万kWh)</th>
+                <th>消纳率</th>
+              </tr>
+            </thead>
+            <tbody>
+              {monthly_rows}
+            </tbody>
+          </table>
+        </div>
+      </section>
+      <section class="card">
+        <div class="section-head">
+          <div>
+            <p class="eyebrow">Sensitivity Analysis</p>
+            <h2>敏感性分析</h2>
+          </div>
+          <span class="badge">{escape(SENSITIVITY_OPTIONS.get(sensitivity.parameter_name, sensitivity.parameter_name))}</span>
+        </div>
+        <div class="chart-grid">
+          <section class="chart-card">
+            <div class="chart-head">
+              <h3>NPV 折线图</h3>
+              <p>观察参数变化对净现值的影响趋势</p>
+            </div>
+            {npv_chart_svg}
+          </section>
+          <section class="chart-card">
+            <div class="chart-head">
+              <h3>IRR 柱状图</h3>
+              <p>观察参数变化对 IRR 的抬升或压缩</p>
+            </div>
+            {irr_chart_svg}
+          </section>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>参数值</th>
+                <th>NPV(万元)</th>
+                <th>IRR</th>
+                <th>累计现金流(万元)</th>
+                <th>折后用户侧电价(元/kWh)</th>
+              </tr>
+            </thead>
+            <tbody>
+              {sensitivity_rows}
+            </tbody>
+          </table>
+        </div>
+      </section>
+    </section>
+    """
+
+
 def _render_page(
     result_html: str = "",
     error: str | None = None,
+    success: str | None = None,
     target_irr: float = 0.095977,
     calculation_workbook: str = DEFAULT_CALCULATION_WORKBOOK,
     station_workbook: str = DEFAULT_STATION_WORKBOOK,
@@ -296,11 +466,18 @@ def _render_page(
     sensitivity_start: float = 0.68,
     sensitivity_stop: float = 0.76,
     sensitivity_step: float = 0.04,
+    update_period_label: str = "",
+    update_generation_10k_kwh: float | None = None,
+    update_self_consumed_10k_kwh: float | None = None,
+    update_exported_10k_kwh: float | None = None,
 ) -> str:
     """Render the single-page HTML UI."""
 
     error_html = (
         f'<section class="card error"><strong>错误:</strong> {escape(error)}</section>' if error else ""
+    )
+    success_html = (
+        f'<section class="card success"><strong>完成:</strong> {escape(success)}</section>' if success else ""
     )
     options_html = "".join(
         f'<option value="{escape(key)}" {"selected" if key == sensitivity_parameter else ""}>{escape(label)}</option>'
@@ -657,6 +834,11 @@ def _render_page(
       border-color: #e7b6a7;
       background: #fff2ee;
     }}
+    .success {{
+      margin-top: 18px;
+      border-color: #b7dacb;
+      background: #eef9f2;
+    }}
     .footer-note {{
       margin-top: 22px;
       color: var(--muted);
@@ -743,11 +925,48 @@ def _render_page(
             <p class="hint">如果后续要切项目，直接替换两条文件路径即可，系统会重新解析并反算。</p>
             <div class="actions">
               <button type="submit">开始反算</button>
-              <a class="ghost-link" href="/api/solve?target_irr={target_irr}&calculation_workbook={escape(calculation_workbook)}&station_workbook={escape(station_workbook)}">查看 JSON API</a>
+              <a class="ghost-link" href="/api/solve?target_irr={target_irr}&calculation_workbook={escape(calculation_workbook)}&station_workbook={escape(station_workbook)}&sensitivity_parameter={escape(sensitivity_parameter)}&sensitivity_start={sensitivity_start}&sensitivity_stop={sensitivity_stop}&sensitivity_step={sensitivity_step}">查看 JSON API</a>
+            </div>
+          </form>
+        </section>
+        <section class="card">
+          <div class="section-head">
+            <div>
+              <p class="eyebrow">Monthly Update</p>
+              <h2>更新本月真实数据</h2>
+            </div>
+            <span class="badge">写入后自动重算</span>
+          </div>
+          <form method="get" action="/update-monthly">
+            <input type="hidden" name="target_irr" value="{target_irr}">
+            <input type="hidden" name="calculation_workbook" value="{escape(calculation_workbook)}">
+            <input type="hidden" name="station_workbook" value="{escape(station_workbook)}">
+            <input type="hidden" name="sensitivity_parameter" value="{escape(sensitivity_parameter)}">
+            <input type="hidden" name="sensitivity_start" value="{sensitivity_start}">
+            <input type="hidden" name="sensitivity_stop" value="{sensitivity_stop}">
+            <input type="hidden" name="sensitivity_step" value="{sensitivity_step}">
+            <div class="form-grid">
+              <label>月份
+                <input name="period_label" type="text" placeholder="例如 2026-05" value="{escape(update_period_label)}">
+              </label>
+              <label>发电量(万kWh)
+                <input name="generation_10k_kwh" type="number" step="0.0001" min="0" value="{'' if update_generation_10k_kwh is None else update_generation_10k_kwh}">
+              </label>
+              <label>自用电量(万kWh)
+                <input name="self_consumed_10k_kwh" type="number" step="0.0001" min="0" value="{'' if update_self_consumed_10k_kwh is None else update_self_consumed_10k_kwh}">
+              </label>
+              <label>上网电量(万kWh)
+                <input name="exported_10k_kwh" type="number" step="0.0001" min="0" value="{'' if update_exported_10k_kwh is None else update_exported_10k_kwh}">
+              </label>
+            </div>
+            <p class="hint">建议每个月补录一次真实发电量、自用电量和上网电量。系统会把该月份写入项目更新文件，并用最近 12 个月实际数据刷新消纳率后重新测算。</p>
+            <div class="actions">
+              <button type="submit">保存并重算</button>
             </div>
           </form>
         </section>
         {error_html}
+        {success_html}
         {result_html}
       </section>
       <aside class="side-stack">
@@ -774,8 +993,9 @@ def _render_page(
             <ul>
               <li>输入目标 IRR 和两份 Excel 路径。</li>
               <li>点击“开始反算”，系统自动解析、测算、反推电价。</li>
+              <li>每月把真实发电、自用、上网数据补录进系统，页面会自动重算。</li>
               <li>结果页会展示关键价格、校验 NPV/IRR 和导出文件路径。</li>
-              <li>导出的 Excel 中会附带 `反算结果` 和 `Excel对账` 工作表。</li>
+              <li>导出的 Excel 中会附带 `反算结果`、`敏感性分析`、`月度数据` 和 `Excel对账` 工作表。</li>
             </ul>
           </div>
         </section>
@@ -788,13 +1008,14 @@ def _render_page(
           </div>
           <div class="callout">
             <p><strong>页面表单:</strong> <code>/</code> 与 <code>/solve</code></p>
+            <p><strong>月度更新:</strong> <code>/update-monthly</code></p>
             <p><strong>JSON 接口:</strong> <code>/api/solve</code></p>
             <p><strong>文档:</strong> <code>/docs</code></p>
           </div>
         </section>
       </aside>
     </section>
-    <p class="footer-note">这版页面优先解决“业务同事能直接用”的问题，后续如果要继续完善，可以再补项目切换下拉、历史计算记录和文件下载按钮。</p>
+    <p class="footer-note">这版页面已经支持按月补录真实运营数据，并在同一页里完成重算与导出。后续如果继续完善，可以再补批量导入、更新日志和多项目切换。</p>
   </main>
 </body>
 </html>"""

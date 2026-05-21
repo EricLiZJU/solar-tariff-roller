@@ -93,6 +93,7 @@ def _write_excel_export(path: Path, payload: dict[str, Any]) -> None:
     annual_sheet = workbook.create_sheet("年度测算")
     solve_sheet = workbook.create_sheet("反算结果") if "target_irr_solution" in payload else None
     sensitivity_sheet = workbook.create_sheet("敏感性分析") if "sensitivity_analysis" in payload else None
+    monthly_sheet = workbook.create_sheet("月度数据") if payload["input"].get("monthly_records") else None
     input_sheet = workbook.create_sheet("输入参数")
     reconciliation_sheet = workbook.create_sheet("Excel对账") if "reconciliation" in payload else None
 
@@ -102,6 +103,8 @@ def _write_excel_export(path: Path, payload: dict[str, Any]) -> None:
         _fill_target_irr_sheet(solve_sheet, payload["target_irr_solution"])
     if sensitivity_sheet is not None:
         _fill_sensitivity_sheet(sensitivity_sheet, payload["sensitivity_analysis"])
+    if monthly_sheet is not None:
+        _fill_monthly_sheet(monthly_sheet, payload["input"]["monthly_records"])
     _fill_input_sheet(input_sheet, payload["input"])
     if reconciliation_sheet is not None:
         _fill_reconciliation_sheet(reconciliation_sheet, payload["reconciliation"])
@@ -150,6 +153,15 @@ def _fill_summary_sheet(sheet: Any, payload: dict[str, Any]) -> None:
                 ("", ""),
                 ("敏感性分析变量", sensitivity["parameter_name"]),
                 ("敏感性分析点数", len(sensitivity["values"])),
+            ]
+        )
+    monthly_records = payload["input"].get("monthly_records", [])
+    if monthly_records:
+        rows.extend(
+            [
+                ("", ""),
+                ("月度数据条数", len(monthly_records)),
+                ("最近月份", monthly_records[-1]["period_label"]),
             ]
         )
 
@@ -373,6 +385,45 @@ def _fill_input_sheet(sheet: Any, payload: dict[str, Any]) -> None:
     sheet.column_dimensions["A"].width = 18
     sheet.column_dimensions["B"].width = 28
     sheet.column_dimensions["C"].width = 42
+
+
+def _fill_monthly_sheet(sheet: Any, monthly_records: list[dict[str, Any]]) -> None:
+    """Render merged monthly operating records."""
+
+    sheet["A1"] = "月度真实数据"
+    sheet["A1"].font = Font(bold=True, size=14)
+
+    headers = [
+        "月份",
+        "发电量(万kWh)",
+        "自用电量(万kWh)",
+        "上网电量(万kWh)",
+        "消纳率",
+    ]
+    keys = [
+        "period_label",
+        "generation_10k_kwh",
+        "self_consumed_10k_kwh",
+        "exported_10k_kwh",
+        "self_consumption_ratio",
+    ]
+
+    header_row = 3
+    for column_idx, header in enumerate(headers, start=1):
+        sheet.cell(header_row, column_idx, header).font = Font(bold=True)
+
+    for row_idx, row in enumerate(monthly_records, start=header_row + 1):
+        for column_idx, key in enumerate(keys, start=1):
+            sheet.cell(row_idx, column_idx, row.get(key))
+
+    for column_letter, width in {
+        "A": 14,
+        "B": 18,
+        "C": 18,
+        "D": 18,
+        "E": 12,
+    }.items():
+        sheet.column_dimensions[column_letter].width = width
 
 
 def _build_export_stem(payload: CalculationInput, stem: str | None) -> str:

@@ -15,6 +15,8 @@ from solar_tariff_roller.services.solver import solve_tariff_by_target_irr
 
 from openpyxl import Workbook
 from openpyxl import load_workbook
+from fastapi.testclient import TestClient
+from pathlib import Path
 import json
 
 
@@ -326,6 +328,115 @@ def test_sensitivity_analysis_tracks_parameter_changes() -> None:
     assert analysis.points[0].project_npv_10k_cny < analysis.points[1].project_npv_10k_cny
     assert analysis.points[1].project_npv_10k_cny < analysis.points[2].project_npv_10k_cny
     assert analysis.points[0].discounted_consumer_tariff < analysis.points[2].discounted_consumer_tariff
+
+
+def test_web_page_focuses_on_desktop_workflow() -> None:
+    from solar_tariff_roller.api.app import create_app
+
+    client = TestClient(create_app())
+    html = client.get("/").text
+
+    assert "详细使用流程" not in html
+    assert "<h2>分年现金流预览</h2>" not in html
+    assert "<h2>结果文件位置</h2>" not in html
+    assert "JSON API" not in html
+    assert "Default Port" not in html
+    assert "浏览文件" in html
+    assert 'type="month"' in html
+    assert "结果与图表下载" not in html
+    assert "使用说明" in html
+    assert "工作台" in html
+    assert "tab-link active" in html
+
+
+def test_help_page_contains_guidance_sections() -> None:
+    from solar_tariff_roller.api.app import create_app
+
+    client = TestClient(create_app())
+    html = client.get("/help").text
+
+    assert "详细使用流程" in html
+    assert "填写注意事项" in html
+    assert "结果说明" in html
+    assert "工作台" in html
+    assert "tab-link active" in html
+
+
+def test_solve_page_shows_intermediate_calculation_sections(tmp_path) -> None:
+    from solar_tariff_roller.api.app import create_app
+
+    calculation_path = tmp_path / "【测算表】测试项目.xlsx"
+    station_path = tmp_path / "电站统计.xlsx"
+    _build_calculation_workbook(calculation_path)
+    _build_station_workbook(station_path)
+
+    client = TestClient(create_app())
+    response = client.get(
+        "/solve",
+        params={
+            "target_irr": 0.095977,
+            "calculation_workbook": str(calculation_path),
+            "station_workbook": str(station_path),
+            "sensitivity_parameter": "tariff.consumer_tariff",
+            "sensitivity_start": 0.68,
+            "sensitivity_stop": 0.72,
+            "sensitivity_step": 0.04,
+        },
+    )
+
+    assert response.status_code == 200
+    assert "计算中间过程" in response.text
+    assert "分年现金流预览" in response.text
+    assert "项目概览与当前文件" in response.text
+    assert "展开查看完整 25 年明细" in response.text
+    assert "<details class=\"accordion\"" in response.text
+    assert "下载 Excel" in response.text
+    assert "下载 NPV 图" in response.text
+    assert "结果与图表下载" in response.text
+    assert "class=\"sticky-table\"" in response.text
+
+
+def test_post_solve_accepts_uploaded_workbooks_and_download_route(tmp_path) -> None:
+    from solar_tariff_roller.api.app import create_app
+
+    calculation_path = tmp_path / "【测算表】测试项目.xlsx"
+    station_path = tmp_path / "电站统计.xlsx"
+    _build_calculation_workbook(calculation_path)
+    _build_station_workbook(station_path)
+
+    client = TestClient(create_app())
+    with calculation_path.open("rb") as calc_file, station_path.open("rb") as station_file:
+        response = client.post(
+            "/solve",
+            data={
+                "target_irr": "0.095977",
+                "sensitivity_parameter": "tariff.consumer_tariff",
+                "sensitivity_start": "0.68",
+                "sensitivity_stop": "0.72",
+                "sensitivity_step": "0.04",
+                "calculation_workbook": "",
+                "station_workbook": "",
+            },
+            files={
+                "calculation_workbook_file": ("calc.xlsx", calc_file, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"),
+                "station_workbook_file": ("station.xlsx", station_file, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"),
+            },
+        )
+
+    assert response.status_code == 200
+    assert "下载 Excel" in response.text
+    assert "/download?path=" in response.text
+
+    marker = "/download?path="
+    start = response.text.find(marker)
+    assert start != -1
+    end = response.text.find('"', start)
+    download_url = response.text[start:end]
+    download_response = client.get(download_url)
+    assert download_response.status_code == 200
+    assert download_response.headers["content-type"].startswith(
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    )
 
 
 def _build_calculation_workbook(path) -> None:

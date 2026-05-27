@@ -72,6 +72,8 @@ def test_load_project_workbook_merges_two_excel_sources(tmp_path) -> None:
     assert payload.generation.annual_sun_hours == 1329
     assert payload.tariff.feed_in_tariff == 0.4153
     assert payload.finance.discount_rate == 0.06
+    assert len(payload.rolling.baseline_monthly_revenues_10k_cny) == 49
+    assert payload.rolling.annual_generation_forecast_10k_kwh[:3] == [77.21, 76.73, 76.26]
     assert len(payload.monthly_records) == 12
     assert payload.monthly_records[0].period_label == "2024-01"
     assert payload.monthly_records[0].generation_10k_kwh == 10.0
@@ -155,6 +157,9 @@ def test_first_pass_calculation_engine_builds_cashflow() -> None:
         finance={
             "discount_rate": 0.06,
         },
+        rolling={
+            "baseline_monthly_revenues_10k_cny": [3.8] * 24,
+        },
     )
 
     assert round(estimate_initial_generation_10k_kwh(payload), 4) == 79.1872
@@ -165,14 +170,19 @@ def test_first_pass_calculation_engine_builds_cashflow() -> None:
 
     assert result.initial_generation_10k_kwh == 79.1872
     assert round(result.discounted_consumer_tariff, 4) == 0.6336
+    assert result.monthly_irr is not None
+    assert result.historical_months_count == 24
+    assert len(result.monthly_projections) == 36
     assert len(result.annual_projections) == 3
-    assert result.annual_projections[0].self_consumed_10k_kwh == 61.768
-    assert result.annual_projections[0].exported_10k_kwh == 15.442
-    assert result.annual_projections[0].gross_revenue_10k_cny > 45
+    assert result.annual_projections[0].self_consumed_10k_kwh == 61.7688
+    assert result.annual_projections[0].exported_10k_kwh == 15.4416
+    assert result.annual_projections[0].gross_revenue_10k_cny > 40
     assert result.annual_projections[0].vat_credit_carry_10k_cny < 0
     assert result.project_npv_10k_cny < 0
 
     serialized = run_calculation(payload)
+    assert serialized["historical_months_count"] == 24
+    assert len(serialized["monthly_projections"]) == 36
     assert serialized["annual_projections"][0]["year"] == 1
     assert serialized["annual_projections"][1]["generation_10k_kwh"] == 76.73
 
@@ -182,7 +192,7 @@ def test_export_calculation_bundle_writes_json_and_excel(tmp_path) -> None:
         project={
             "project_name": "导出测试项目",
             "capacity_mwp": 0.726635,
-            "operation_years": 2,
+            "operation_years": 25,
         },
         generation={
             "annual_sun_hours": 1329,
@@ -201,6 +211,7 @@ def test_export_calculation_bundle_writes_json_and_excel(tmp_path) -> None:
             "total_investment_10k_cny": 344.42499,
             "annual_om_10k_cny": 3.633175,
             "annual_insurance_10k_cny": 0.34442499,
+            "replacement_costs_10k_cny_by_year": {15: 13.392},
         },
         monthly_records=[
             {
@@ -211,13 +222,19 @@ def test_export_calculation_bundle_writes_json_and_excel(tmp_path) -> None:
                 "self_consumption_ratio": 0.8,
             }
         ],
+        rolling={
+            "baseline_monthly_revenues_10k_cny": [3.8] * 49,
+        },
     )
+
+    baseline_target = build_cashflow_result(payload).project_irr
+    assert baseline_target is not None
 
     paths = export_calculation_bundle(
         payload,
         output_dir=tmp_path,
         stem="export_case",
-        target_irr=0.06,
+        target_irr=baseline_target,
         sensitivity_parameter="tariff.consumer_tariff",
         sensitivity_start=0.68,
         sensitivity_stop=0.72,
@@ -229,16 +246,18 @@ def test_export_calculation_bundle_writes_json_and_excel(tmp_path) -> None:
 
     json_payload = json.loads(paths["json"].read_text(encoding="utf-8"))
     assert json_payload["project"]["project_name"] == "导出测试项目"
-    assert len(json_payload["result"]["annual_projections"]) == 2
-    assert json_payload["target_irr_solution"]["target_irr"] == 0.06
+    assert len(json_payload["result"]["annual_projections"]) == 25
+    assert len(json_payload["result"]["monthly_projections"]) == 300
+    assert json_payload["target_irr_solution"]["target_irr"] == baseline_target
     assert json_payload["sensitivity_analysis"]["parameter_name"] == "tariff.consumer_tariff"
     assert len(json_payload["sensitivity_analysis"]["values"]) == 2
     assert len(json_payload["input"]["monthly_records"]) == 1
 
     workbook = load_workbook(paths["excel"], data_only=True)
-    assert workbook.sheetnames == ["汇总", "年度测算", "反算结果", "敏感性分析", "月度数据", "输入参数"]
-    assert workbook["汇总"]["A1"].value == "测算结果汇总"
-    assert workbook["年度测算"]["A2"].value == 1
+    assert workbook.sheetnames == ["汇总", "年度汇总预览", "滚动月度现金流", "反算结果", "敏感性分析", "月度数据", "输入参数"]
+    assert workbook["汇总"]["A1"].value == "滚动测算结果汇总"
+    assert workbook["年度汇总预览"]["A2"].value == 1
+    assert workbook["滚动月度现金流"]["A2"].value == 1
     assert workbook["敏感性分析"]["A1"].value == "敏感性分析结果"
     assert workbook["月度数据"]["A1"].value == "月度真实数据"
 
@@ -274,15 +293,18 @@ def test_solve_tariff_by_target_irr_recovers_current_tariff() -> None:
         },
         finance={
             "discount_rate": 0.06,
-            "target_irr": 0.095977,
+        },
+        rolling={
+            "baseline_monthly_revenues_10k_cny": [3.8] * 49,
         },
     )
+    baseline_result = build_cashflow_result(payload)
+    solved = solve_tariff_by_target_irr(payload, target_irr=baseline_result.project_irr)
 
-    solved = solve_tariff_by_target_irr(payload)
-
-    assert abs(solved.solved_consumer_tariff - 0.72) < 0.001
-    assert abs(solved.solved_discounted_consumer_tariff - 0.6336) < 0.001
-    assert abs(solved.solved_npv_10k_cny) < 0.01
+    assert baseline_result.project_irr is not None
+    assert abs(solved.solved_consumer_tariff - 0.72) < 0.01
+    assert abs(solved.solved_discounted_consumer_tariff - 0.6336) < 0.01
+    assert abs(solved.solved_project_irr - baseline_result.project_irr) < 0.0001
 
 
 def test_sensitivity_analysis_tracks_parameter_changes() -> None:
@@ -316,6 +338,9 @@ def test_sensitivity_analysis_tracks_parameter_changes() -> None:
         },
         finance={
             "discount_rate": 0.06,
+        },
+        rolling={
+            "baseline_monthly_revenues_10k_cny": [3.8] * 49,
         },
     )
 
@@ -386,9 +411,9 @@ def test_solve_page_shows_intermediate_calculation_sections(tmp_path) -> None:
 
     assert response.status_code == 200
     assert "计算中间过程" in response.text
-    assert "分年现金流预览" in response.text
+    assert "滚动测算年度汇总预览" in response.text
     assert "项目概览与当前文件" in response.text
-    assert "展开查看完整 25 年明细" in response.text
+    assert "展开查看完整 25 个滚动年度汇总" in response.text
     assert "<details class=\"accordion\"" in response.text
     assert "下载 Excel" in response.text
     assert "下载 NPV 图" in response.text
@@ -444,6 +469,7 @@ def _build_calculation_workbook(path) -> None:
     base = workbook.active
     base.title = "项目基础数据"
     financial = workbook.create_sheet("分年现金流量表及财务指标")
+    rolling = workbook.create_sheet("月滚动现金流量表")
 
     base["C5"] = 0.726635
     base["D5"] = 1329
@@ -459,11 +485,19 @@ def _build_calculation_workbook(path) -> None:
     base["D23"] = 0.4153
     base["D24"] = 0.72
     base["D25"] = 0.88
+    base["D26"] = 0.6336
     base["D31"] = 2.5
     base["D32"] = 0.6
+    generation_values = [77.21, 76.73, 76.26, 75.78, 75.31]
+    while len(generation_values) < 25:
+        generation_values.append(round(generation_values[-1] * 0.994, 2))
+    for index, value in enumerate(generation_values[:25], start=31):
+        base.cell(index, 7, value)
 
     financial["O5"] = 0.06
     financial["G7"] = 0.34442499
+    for row_idx in range(7, 56):
+        rolling.cell(row_idx, 3, 3.79583333333333)
 
     workbook.save(path)
 

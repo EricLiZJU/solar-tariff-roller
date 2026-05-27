@@ -397,7 +397,6 @@ def _build_workbench_context(
     calculation_result = build_cashflow_result(payload)
     exports = export_calculation_bundle(
         payload,
-        reference_workbook_path=calculation_path,
         target_irr=target_irr,
         sensitivity_parameter=sensitivity_parameter,
         sensitivity_start=sensitivity_start,
@@ -585,14 +584,14 @@ def _render_result_html(context: dict[str, object]) -> str:
             <p class="eyebrow">Solve Result</p>
             <h2>反算结果</h2>
           </div>
-          <span class="badge">IRR 已咬合</span>
+          <span class="badge">滚动 IRR 已咬合</span>
         </div>
         <div class="metric-grid">
           <article class="metric primary"><span>目标 IRR</span><strong>{solved.target_irr:.6f}</strong></article>
           <article class="metric accent"><span>用户侧综合电价</span><strong>{solved.solved_consumer_tariff:.6f}</strong><em>元/kWh</em></article>
           <article class="metric accent"><span>折后消纳电价</span><strong>{solved.solved_discounted_consumer_tariff:.6f}</strong><em>元/kWh</em></article>
           <article class="metric"><span>校验 NPV</span><strong>{solved.solved_npv_10k_cny:.6f}</strong><em>万元</em></article>
-          <article class="metric"><span>校验 IRR</span><strong>{solved.solved_project_irr:.6f}</strong></article>
+          <article class="metric"><span>校验滚动 IRR</span><strong>{solved.solved_project_irr:.6f}</strong></article>
         </div>
       </section>
       <section class="card panel-span-2">
@@ -607,7 +606,7 @@ def _render_result_html(context: dict[str, object]) -> str:
             <div><span>项目名称</span><strong>{escape(payload.project.project_name)}</strong></div>
             <div><span>电站名称</span><strong>{escape(payload.project.station_name or "-")}</strong></div>
             <div><span>装机容量</span><strong>{payload.project.capacity_mwp:.6f} MWp</strong></div>
-            <div><span>当前折现率</span><strong>{payload.finance.discount_rate:.6f}</strong></div>
+            <div><span>IRR 年化方式</span><strong>{escape(payload.rolling.irr_annualization_mode)}</strong></div>
             <div><span>生效自用比例</span><strong>{payload.consumption.self_consumption_ratio:.4%}</strong></div>
             <div><span>月度更新条数</span><strong>{len(persisted_updates)}</strong></div>
           </div>
@@ -628,16 +627,16 @@ def _render_result_html(context: dict[str, object]) -> str:
           <section class="subpanel">
             <div class="section-head tight"><div><p class="eyebrow">Calculation Trace</p><h3>计算中间过程</h3></div></div>
             <div class="accordion-stack">
-              <details class="accordion" open><summary>基础计算口径</summary><div class="accordion-body"><div class="mini-grid compact"><div><span>理论首年发电量</span><strong>{calculation_result.initial_generation_10k_kwh:.4f} 万kWh</strong></div><div><span>折后用户侧电价</span><strong>{calculation_result.discounted_consumer_tariff:.6f} 元/kWh</strong></div><div><span>初始投资流出</span><strong>{calculation_result.initial_outflow_10k_cny:.2f} 万元</strong></div><div><span>资本开支进项税</span><strong>{calculation_result.capex_input_vat_10k_cny:.2f} 万元</strong></div></div></div></details>
-              <details class="accordion" open><summary>首年发电拆分</summary><div class="accordion-body"><div class="mini-grid compact"><div><span>首年发电量</span><strong>{0.0 if first_year is None else first_year.generation_10k_kwh:.2f} 万kWh</strong></div><div><span>累计衰减</span><strong>{0.0 if first_year is None else first_year.degradation_pct:.2f}%</strong></div><div><span>首年自用电量</span><strong>{0.0 if first_year is None else first_year.self_consumed_10k_kwh:.3f} 万kWh</strong></div><div><span>首年上网电量</span><strong>{0.0 if first_year is None else first_year.exported_10k_kwh:.3f} 万kWh</strong></div></div></div></details>
-              <details class="accordion"><summary>首年收益与税费</summary><div class="accordion-body"><div class="mini-grid compact"><div><span>首年总收入</span><strong>{0.0 if first_year is None else first_year.gross_revenue_10k_cny:.2f} 万元</strong></div><div><span>首年年度成本</span><strong>{0.0 if first_year is None else first_year.annual_cost_10k_cny:.2f} 万元</strong></div><div><span>首年销项税</span><strong>{0.0 if first_year is None else first_year.output_vat_10k_cny:.2f} 万元</strong></div><div><span>首年进项税</span><strong>{0.0 if first_year is None else first_year.input_vat_10k_cny:.2f} 万元</strong></div><div><span>首年应缴增值税</span><strong>{0.0 if first_year is None else first_year.vat_payable_10k_cny:.2f} 万元</strong></div><div><span>首年附加税</span><strong>{0.0 if first_year is None else first_year.surcharge_tax_10k_cny:.2f} 万元</strong></div></div></div></details>
-              <details class="accordion"><summary>现金流结果</summary><div class="accordion-body"><div class="mini-grid compact"><div><span>首年净现金流</span><strong>{0.0 if first_year is None else first_year.net_cashflow_10k_cny:.2f} 万元</strong></div><div><span>首年折现系数</span><strong>{0.0 if first_year is None else first_year.present_value_factor:.4f}</strong></div><div><span>首年折现现金流</span><strong>{0.0 if first_year is None else first_year.discounted_cashflow_10k_cny:.2f} 万元</strong></div><div><span>项目累计净现金流</span><strong>{calculation_result.cumulative_cashflow_10k_cny:.2f} 万元</strong></div></div></div></details>
+              <details class="accordion" open><summary>滚动测算基础口径</summary><div class="accordion-body"><div class="mini-grid compact"><div><span>滚动起算年发电量</span><strong>{calculation_result.initial_generation_10k_kwh:.4f} 万kWh</strong></div><div><span>折后用户侧电价</span><strong>{calculation_result.discounted_consumer_tariff:.6f} 元/kWh</strong></div><div><span>初始投资流出</span><strong>{calculation_result.initial_outflow_10k_cny:.2f} 万元</strong></div><div><span>资本开支进项税</span><strong>{calculation_result.capex_input_vat_10k_cny:.2f} 万元</strong></div></div></div></details>
+              <details class="accordion" open><summary>当前滚动年度电量拆分</summary><div class="accordion-body"><div class="mini-grid compact"><div><span>当前滚动年度发电量</span><strong>{0.0 if first_year is None else first_year.generation_10k_kwh:.2f} 万kWh</strong></div><div><span>累计衰减</span><strong>{0.0 if first_year is None else first_year.degradation_pct:.2f}%</strong></div><div><span>当前滚动年度自用电量</span><strong>{0.0 if first_year is None else first_year.self_consumed_10k_kwh:.3f} 万kWh</strong></div><div><span>当前滚动年度上网电量</span><strong>{0.0 if first_year is None else first_year.exported_10k_kwh:.3f} 万kWh</strong></div></div></div></details>
+              <details class="accordion"><summary>当前滚动年度收益与税费</summary><div class="accordion-body"><div class="mini-grid compact"><div><span>当前滚动年度总收入</span><strong>{0.0 if first_year is None else first_year.gross_revenue_10k_cny:.2f} 万元</strong></div><div><span>当前滚动年度成本</span><strong>{0.0 if first_year is None else first_year.annual_cost_10k_cny:.2f} 万元</strong></div><div><span>当前滚动年度销项税</span><strong>{0.0 if first_year is None else first_year.output_vat_10k_cny:.2f} 万元</strong></div><div><span>当前滚动年度进项税</span><strong>{0.0 if first_year is None else first_year.input_vat_10k_cny:.2f} 万元</strong></div><div><span>当前滚动年度应缴增值税</span><strong>{0.0 if first_year is None else first_year.vat_payable_10k_cny:.2f} 万元</strong></div><div><span>当前滚动年度附加税</span><strong>{0.0 if first_year is None else first_year.surcharge_tax_10k_cny:.2f} 万元</strong></div></div></div></details>
+              <details class="accordion"><summary>滚动现金流结果</summary><div class="accordion-body"><div class="mini-grid compact"><div><span>当前滚动年度净现金流</span><strong>{0.0 if first_year is None else first_year.net_cashflow_10k_cny:.2f} 万元</strong></div><div><span>当前滚动年度折现系数</span><strong>{0.0 if first_year is None else first_year.present_value_factor:.4f}</strong></div><div><span>滚动月度 IRR</span><strong>{'' if calculation_result.monthly_irr is None else f'{calculation_result.monthly_irr:.6f}'}</strong></div><div><span>项目累计净现金流</span><strong>{calculation_result.cumulative_cashflow_10k_cny:.2f} 万元</strong></div></div></div></details>
             </div>
           </section>
           <section class="subpanel">
-            <div class="section-head tight"><div><p class="eyebrow">Annual Preview</p><h3>分年现金流预览</h3></div><span class="badge">前 8 年</span></div>
+            <div class="section-head tight"><div><p class="eyebrow">Annual Preview</p><h3>滚动测算年度汇总预览</h3></div><span class="badge">前 8 个滚动年度</span></div>
             <div class="table-wrap compact-table"><table class="sticky-table"><thead><tr><th>年份</th><th>发电量</th><th>自用</th><th>上网</th><th>总收入</th><th>成本</th><th>增值税</th><th>附加税</th><th>净现金流</th><th>折现现金流</th></tr></thead><tbody>{annual_rows}</tbody></table></div>
-            <details class="accordion expand-table"><summary>展开查看完整 25 年明细</summary><div class="accordion-body"><div class="table-wrap compact-table tall-table"><table class="sticky-table"><thead><tr><th>年份</th><th>累计衰减</th><th>发电量</th><th>自用电量</th><th>上网电量</th><th>总收入</th><th>年度成本</th><th>进项税</th><th>销项税</th><th>增值税</th><th>附加税</th><th>净现金流</th><th>折现现金流</th><th>累计现金流</th></tr></thead><tbody>{annual_full_rows}</tbody></table></div></div></details>
+            <details class="accordion expand-table"><summary>展开查看完整 25 个滚动年度汇总</summary><div class="accordion-body"><div class="table-wrap compact-table tall-table"><table class="sticky-table"><thead><tr><th>年份</th><th>累计衰减</th><th>发电量</th><th>自用电量</th><th>上网电量</th><th>总收入</th><th>年度成本</th><th>进项税</th><th>销项税</th><th>增值税</th><th>附加税</th><th>净现金流</th><th>折现现金流</th><th>累计现金流</th></tr></thead><tbody>{annual_full_rows}</tbody></table></div></div></details>
           </section>
           <section class="subpanel">
             <div class="section-head tight"><div><p class="eyebrow">Monthly Actuals</p><h3>最近 12 个月真实数据</h3></div><span class="badge">自动重算</span></div>
@@ -1297,7 +1296,7 @@ def _render_page(
           <div class="hero-main">
             <p class="eyebrow">Solar Tariff Roller</p>
             <h1>消纳电价测算工作台</h1>
-            <p class="lead">界面按桌面工具方式重新收敛成一张紧凑工作台。先读取测算表和电站统计表完成一次基准测算，再按月录入真实发电、自用和上网数据，系统会自动刷新消纳率、现金流、IRR 和反算电价。</p>
+            <p class="lead">界面按桌面工具方式重新收敛成一张紧凑工作台。先读取测算表和电站统计表建立滚动测算基线，再按月录入真实发电、自用和上网数据，系统会自动刷新消纳率、滚动现金流、IRR 和反算电价。</p>
           </div>
           <nav class="tab-nav" aria-label="页面导航">
             <a class="tab-link active" href="/">工作台</a>
@@ -1305,10 +1304,10 @@ def _render_page(
           </nav>
         </div>
         <div class="hero-strip">
-          <div class="hero-chip"><strong>基准测算</strong><span>先确认两份 Excel 和目标 IRR，再开始首次测算。</span></div>
+          <div class="hero-chip"><strong>滚动基线</strong><span>先确认两份 Excel 和目标 IRR，再建立首次滚动测算基线。</span></div>
           <div class="hero-chip"><strong>月度更新</strong><span>每次录入一个月份，重复录入同月会自动覆盖。</span></div>
           <div class="hero-chip"><strong>统一口径</strong><span>发电量、自用电量、上网电量统一使用万kWh。</span></div>
-          <div class="hero-chip"><strong>先看中间值</strong><span>先核对首年拆分、税费和净现金流，再看完整明细。</span></div>
+          <div class="hero-chip"><strong>先看中间值</strong><span>先核对当前滚动年度拆分、税费和净现金流，再看完整明细。</span></div>
         </div>
       </section>
     </section>
@@ -1356,7 +1355,7 @@ def _render_page(
                 </div>
               </label>
             </div>
-            <p class="hint">建议第一次先只做基准测算。确认“计算中间过程”里的首年发电拆分、税费和现金流无误后，再录入月度真实数据。</p>
+            <p class="hint">建议第一次先建立滚动测算基线。确认“计算中间过程”里的当前滚动年度拆分、税费和现金流无误后，再录入月度真实数据。</p>
             <div class="actions">
               <button type="submit">开始测算</button>
             </div>
@@ -1605,7 +1604,7 @@ def _render_help_page() -> str:
           <ol>
             <li>先确认两份源文件路径正确，分别对应测算表和电站统计表。</li>
             <li>输入目标 IRR，点击“开始测算”，先看反算结果是否与预期接近。</li>
-            <li>检查“计算中间过程”里的首年发电、收入、税费和净现金流，确认口径无误。</li>
+            <li>检查“计算中间过程”里的当前滚动年度发电、收入、税费和净现金流，确认口径无误。</li>
             <li>进入“更新本月真实数据”，录入当月发电量、自用电量、上网电量。</li>
             <li>系统保存后会自动重算，并把最新月度记录写入本地更新文件。</li>
             <li>需要对外提交时，直接使用结果区域展示的 Excel 文件。</li>
@@ -1630,8 +1629,8 @@ def _render_help_page() -> str:
         <h2>结果说明</h2>
         <div class="callout">
           <p><strong>反算结果:</strong> 展示目标 IRR 对应的综合电价、折后电价、校验 NPV 和校验 IRR。</p>
-          <p><strong>计算中间过程:</strong> 展示首年发电拆分、收益税费、现金流关键值，便于和 Excel 对账。</p>
-          <p><strong>分年现金流预览:</strong> 页面仅展示前 8 年，完整结果在导出 Excel 中查看。</p>
+          <p><strong>计算中间过程:</strong> 展示当前滚动年度发电拆分、收益税费、现金流关键值，便于和 Excel 对账。</p>
+          <p><strong>滚动年度汇总预览:</strong> 页面仅展示前 8 个滚动年度，完整结果在导出 Excel 中查看。</p>
         </div>
       </section>
     </section>

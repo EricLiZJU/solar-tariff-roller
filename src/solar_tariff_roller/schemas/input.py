@@ -115,6 +115,30 @@ class FinanceParamsInput(BaseModel):
     target_irr: float | None = Field(default=None, ge=0, le=1, description="目标 IRR")
 
 
+class RollingParamsInput(BaseModel):
+    """Inputs specific to the rolling tariff workbook logic."""
+
+    baseline_monthly_revenues_10k_cny: list[float] = Field(
+        default_factory=list,
+        description="滚动表中已固化的历史月度含税收入",
+    )
+    annual_generation_forecast_10k_kwh: list[float] = Field(
+        default_factory=list,
+        description="滚动表中按年给出的后续发电量预测",
+    )
+    irr_annualization_mode: str = Field(
+        default="effective",
+        description="月度 IRR 年化方式，可选 effective 或 simple",
+    )
+
+    @field_validator("irr_annualization_mode")
+    @classmethod
+    def validate_annualization_mode(cls, value: str) -> str:
+        if value not in {"effective", "simple"}:
+            raise ValueError("irr_annualization_mode must be 'effective' or 'simple'")
+        return value
+
+
 class MonthlyGenerationRecordInput(BaseModel):
     """Monthly operating values imported from station statistics sheets."""
 
@@ -149,6 +173,7 @@ class CalculationInput(BaseModel):
     cost: CostParamsInput
     tax: TaxParamsInput = Field(default_factory=TaxParamsInput)
     finance: FinanceParamsInput = Field(default_factory=FinanceParamsInput)
+    rolling: RollingParamsInput = Field(default_factory=RollingParamsInput)
     monthly_records: list[MonthlyGenerationRecordInput] = Field(default_factory=list)
 
     @property

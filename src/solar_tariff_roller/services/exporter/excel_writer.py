@@ -1,4 +1,4 @@
-"""JSON and Excel exporters for calculation results."""
+"""JSON and Excel exporters for rolling calculation results."""
 
 from __future__ import annotations
 
@@ -85,12 +85,13 @@ def _write_json_export(path: Path, payload: dict[str, Any]) -> None:
 
 
 def _write_excel_export(path: Path, payload: dict[str, Any]) -> None:
-    """Write a structured Excel export with summary, annual cashflow, and input sheets."""
+    """Write a structured Excel export with rolling cashflow and annual preview sheets."""
 
     workbook = Workbook()
     summary_sheet = workbook.active
     summary_sheet.title = "汇总"
-    annual_sheet = workbook.create_sheet("年度测算")
+    annual_sheet = workbook.create_sheet("年度汇总预览")
+    rolling_sheet = workbook.create_sheet("滚动月度现金流")
     solve_sheet = workbook.create_sheet("反算结果") if "target_irr_solution" in payload else None
     sensitivity_sheet = workbook.create_sheet("敏感性分析") if "sensitivity_analysis" in payload else None
     monthly_sheet = workbook.create_sheet("月度数据") if payload["input"].get("monthly_records") else None
@@ -99,6 +100,7 @@ def _write_excel_export(path: Path, payload: dict[str, Any]) -> None:
 
     _fill_summary_sheet(summary_sheet, payload)
     _fill_annual_sheet(annual_sheet, payload["result"]["annual_projections"])
+    _fill_rolling_sheet(rolling_sheet, payload["result"].get("monthly_projections", []))
     if solve_sheet is not None:
         _fill_target_irr_sheet(solve_sheet, payload["target_irr_solution"])
     if sensitivity_sheet is not None:
@@ -128,11 +130,13 @@ def _fill_summary_sheet(sheet: Any, payload: dict[str, Any]) -> None:
         ("", ""),
         ("初始年发电量(万kWh)", result["initial_generation_10k_kwh"]),
         ("折后用户侧电价(元/kWh)", result["discounted_consumer_tariff"]),
+        ("滚动月度 IRR", result.get("monthly_irr")),
         ("初始投资流出(万元)", result["initial_outflow_10k_cny"]),
         ("资本开支进项税(万元)", result["capex_input_vat_10k_cny"]),
         ("项目净现值 NPV(万元)", result["project_npv_10k_cny"]),
-        ("项目 IRR", result["project_irr"]),
+        ("项目滚动年化 IRR", result["project_irr"]),
         ("累计净现金流(万元)", result["cumulative_cashflow_10k_cny"]),
+        ("历史固化月份数", result.get("historical_months_count", 0)),
     ]
     if "target_irr_solution" in payload:
         solution = payload["target_irr_solution"]
@@ -143,7 +147,7 @@ def _fill_summary_sheet(sheet: Any, payload: dict[str, Any]) -> None:
                 ("反算用户侧综合电价(元/kWh)", solution["solved_consumer_tariff"]),
                 ("反算折后消纳电价(元/kWh)", solution["solved_discounted_consumer_tariff"]),
                 ("反算校验 NPV(万元)", solution["solved_npv_10k_cny"]),
-                ("反算校验 IRR", solution["solved_project_irr"]),
+                ("反算校验滚动 IRR", solution["solved_project_irr"]),
             ]
         )
     if "sensitivity_analysis" in payload:
@@ -165,7 +169,7 @@ def _fill_summary_sheet(sheet: Any, payload: dict[str, Any]) -> None:
             ]
         )
 
-    sheet["A1"] = "测算结果汇总"
+    sheet["A1"] = "滚动测算结果汇总"
     sheet["A1"].font = Font(bold=True, size=14)
 
     row_idx = 3
@@ -181,7 +185,7 @@ def _fill_summary_sheet(sheet: Any, payload: dict[str, Any]) -> None:
 
 
 def _fill_annual_sheet(sheet: Any, annual_rows: list[dict[str, Any]]) -> None:
-    """Render the annual projections sheet."""
+    """Render the annual preview sheet aggregated from rolling months."""
 
     headers = [
         "年份",
@@ -257,7 +261,7 @@ def _fill_annual_sheet(sheet: Any, annual_rows: list[dict[str, Any]]) -> None:
 def _fill_target_irr_sheet(sheet: Any, solution: dict[str, Any]) -> None:
     """Render target IRR reverse-solve results."""
 
-    sheet["A1"] = "目标 IRR 反算结果"
+    sheet["A1"] = "目标 IRR 滚动反算结果"
     sheet["A1"].font = Font(bold=True, size=14)
 
     rows = [
@@ -265,7 +269,7 @@ def _fill_target_irr_sheet(sheet: Any, solution: dict[str, Any]) -> None:
         ("反算用户侧综合电价(元/kWh)", solution["solved_consumer_tariff"]),
         ("反算折后消纳电价(元/kWh)", solution["solved_discounted_consumer_tariff"]),
         ("反算校验 NPV(万元)", solution["solved_npv_10k_cny"]),
-        ("反算校验 IRR", solution["solved_project_irr"]),
+        ("反算校验滚动 IRR", solution["solved_project_irr"]),
     ]
     for row_idx, (label, value) in enumerate(rows, start=3):
         sheet.cell(row_idx, 1, label).font = Font(bold=True)
@@ -273,6 +277,95 @@ def _fill_target_irr_sheet(sheet: Any, solution: dict[str, Any]) -> None:
 
     sheet.column_dimensions["A"].width = 30
     sheet.column_dimensions["B"].width = 20
+
+
+def _fill_rolling_sheet(sheet: Any, monthly_rows: list[dict[str, Any]]) -> None:
+    """Render the rolling monthly cashflow detail sheet."""
+
+    headers = [
+        "月份序号",
+        "运营年份",
+        "年内月份",
+        "阶段",
+        "月发电量(万kWh)",
+        "月自用电量(万kWh)",
+        "月上网电量(万kWh)",
+        "月含税收入(万元)",
+        "年化收入基准(万元)",
+        "保险费(万元)",
+        "运维及租金(万元)",
+        "更换成本(万元)",
+        "成本合计(万元)",
+        "进项税(万元)",
+        "销项税(万元)",
+        "增值税余额(万元)",
+        "应缴增值税(万元)",
+        "留抵税额(万元)",
+        "附加税(万元)",
+        "净现金流(万元)",
+        "月折现系数",
+        "折现现金流(万元)",
+        "累计现金流(万元)",
+    ]
+    keys = [
+        "month_index",
+        "operating_year",
+        "month_in_year",
+        "period_type",
+        "generation_10k_kwh",
+        "self_consumed_10k_kwh",
+        "exported_10k_kwh",
+        "gross_revenue_10k_cny",
+        "annualized_revenue_basis_10k_cny",
+        "insurance_cost_10k_cny",
+        "om_cost_10k_cny",
+        "replacement_cost_10k_cny",
+        "total_cost_10k_cny",
+        "input_vat_10k_cny",
+        "output_vat_10k_cny",
+        "vat_balance_10k_cny",
+        "vat_payable_10k_cny",
+        "vat_credit_carry_10k_cny",
+        "surcharge_tax_10k_cny",
+        "net_cashflow_10k_cny",
+        "discount_factor",
+        "discounted_cashflow_10k_cny",
+        "cumulative_cashflow_10k_cny",
+    ]
+
+    for column_idx, header in enumerate(headers, start=1):
+        sheet.cell(1, column_idx, header).font = Font(bold=True)
+
+    for row_idx, row in enumerate(monthly_rows, start=2):
+        for column_idx, key in enumerate(keys, start=1):
+            sheet.cell(row_idx, column_idx, row.get(key))
+
+    for column_letter, width in {
+        "A": 10,
+        "B": 10,
+        "C": 10,
+        "D": 10,
+        "E": 14,
+        "F": 15,
+        "G": 15,
+        "H": 14,
+        "I": 14,
+        "J": 12,
+        "K": 14,
+        "L": 12,
+        "M": 12,
+        "N": 12,
+        "O": 12,
+        "P": 14,
+        "Q": 14,
+        "R": 14,
+        "S": 12,
+        "T": 14,
+        "U": 12,
+        "V": 14,
+        "W": 14,
+    }.items():
+        sheet.column_dimensions[column_letter].width = width
 
 
 def _fill_sensitivity_sheet(sheet: Any, sensitivity: dict[str, Any]) -> None:

@@ -23,6 +23,7 @@ from solar_tariff_roller.services.parser.monthly_updates import (
 
 PROJECT_BASE_SHEET = "项目基础数据"
 FINANCIAL_SHEET = "分年现金流量表及财务指标"
+ROLLING_SHEET = "月滚动现金流量表"
 STATION_SHEET = "Sheet1"
 
 
@@ -97,6 +98,7 @@ def parse_calculation_workbook(workbook_path: str | Path) -> dict[str, Any]:
     workbook = load_workbook(workbook_path, data_only=True)
     base_sheet = workbook[PROJECT_BASE_SHEET]
     financial_sheet = workbook[FINANCIAL_SHEET]
+    rolling_sheet = workbook[ROLLING_SHEET] if ROLLING_SHEET in workbook.sheetnames else None
 
     capacity_mwp = _as_float(base_sheet["C5"].value) or _as_float(base_sheet["C10"].value) or 0.0
     self_consumption_ratio = _as_float(base_sheet["C15"].value) or 0.0
@@ -146,6 +148,14 @@ def parse_calculation_workbook(workbook_path: str | Path) -> dict[str, Any]:
         "finance": {
             "discount_rate": discount_rate or 0.06,
             "target_irr": None,
+        },
+        "rolling": {
+            "baseline_monthly_revenues_10k_cny": _parse_rolling_baseline_revenues(rolling_sheet),
+            "annual_generation_forecast_10k_kwh": _parse_annual_generation_forecast(
+                base_sheet,
+                operation_years=25,
+            ),
+            "irr_annualization_mode": "effective",
         },
         "monthly_records": [],
     }
@@ -256,6 +266,31 @@ def _normalize_project_name(file_stem: str) -> str:
     """Convert the workbook file name into a cleaner project name."""
 
     return re.sub(r"^【[^】]+】", "", file_stem).strip()
+
+
+def _parse_rolling_baseline_revenues(sheet: Any | None) -> list[float]:
+    """Read the fixed historical monthly revenues from the rolling sheet."""
+
+    if sheet is None:
+        return []
+
+    values: list[float] = []
+    for row_idx in range(7, 56):
+        value = _as_float(sheet.cell(row_idx, 3).value)
+        values.append(value or 0.0)
+    return values
+
+
+def _parse_annual_generation_forecast(base_sheet: Any, operation_years: int) -> list[float]:
+    """Read the annual generation forecast block when present."""
+
+    values: list[float] = []
+    for row_idx in range(31, 31 + operation_years):
+        value = _as_float(base_sheet.cell(row_idx, 7).value)
+        if value is None:
+            break
+        values.append(round(value, 2))
+    return values
 
 
 def _excel_date_string(value: Any) -> str | None:

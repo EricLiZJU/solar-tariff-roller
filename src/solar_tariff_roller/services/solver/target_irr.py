@@ -27,7 +27,7 @@ def solve_tariff_by_target_irr(
     lower_bound: float = 0.0,
     upper_bound: float = 5.0,
 ) -> TargetIrrSolveResult:
-    """Solve the consumer tariff required to achieve the target IRR."""
+    """Solve the consumer tariff required to achieve the target rolling IRR."""
 
     effective_target_irr = target_irr if target_irr is not None else payload.finance.target_irr
     if effective_target_irr is None:
@@ -37,14 +37,16 @@ def solve_tariff_by_target_irr(
         raise ValueError("target_irr must be between 0 and 1")
 
     solve_payload = payload.model_copy(deep=True)
-    solve_payload.finance.discount_rate = effective_target_irr
     solve_payload.finance.target_irr = effective_target_irr
+    solve_payload.finance.discount_rate = effective_target_irr
 
     def objective(consumer_tariff: float) -> float:
         trial_payload = solve_payload.model_copy(deep=True)
         trial_payload.tariff.consumer_tariff = consumer_tariff
         result = build_cashflow_result(trial_payload)
-        return result.project_npv_10k_cny
+        if result.project_irr is None:
+            raise ValueError("Unable to calculate project IRR for the current tariff")
+        return result.project_irr - effective_target_irr
 
     lower_value = objective(lower_bound)
     upper_value = objective(upper_bound)

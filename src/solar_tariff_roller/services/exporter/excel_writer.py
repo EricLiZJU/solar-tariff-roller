@@ -129,7 +129,8 @@ def _fill_summary_sheet(sheet: Any, payload: dict[str, Any]) -> None:
         ("导出时间", payload["exported_at"]),
         ("", ""),
         ("初始年发电量(万kWh)", result["initial_generation_10k_kwh"]),
-        ("折后用户侧电价(元/kWh)", result["discounted_consumer_tariff"]),
+        ("余电上网电价(元/kWh)", payload["input"]["tariff"]["feed_in_tariff"]),
+        ("当前折后消纳电价(元/kWh)", result["discounted_consumer_tariff"]),
         ("滚动月度 IRR", result.get("monthly_irr")),
         ("初始投资流出(万元)", result["initial_outflow_10k_cny"]),
         ("资本开支进项税(万元)", result["capex_input_vat_10k_cny"]),
@@ -144,8 +145,8 @@ def _fill_summary_sheet(sheet: Any, payload: dict[str, Any]) -> None:
             [
                 ("", ""),
                 ("目标 IRR", solution["target_irr"]),
-                ("反算用户侧综合电价(元/kWh)", solution["solved_consumer_tariff"]),
                 ("反算折后消纳电价(元/kWh)", solution["solved_discounted_consumer_tariff"]),
+                ("折算自用电综合电价(元/kWh)", solution["solved_consumer_tariff"]),
                 ("反算校验 NPV(万元)", solution["solved_npv_10k_cny"]),
                 ("反算校验滚动 IRR", solution["solved_project_irr"]),
             ]
@@ -266,8 +267,8 @@ def _fill_target_irr_sheet(sheet: Any, solution: dict[str, Any]) -> None:
 
     rows = [
         ("目标 IRR", solution["target_irr"]),
-        ("反算用户侧综合电价(元/kWh)", solution["solved_consumer_tariff"]),
         ("反算折后消纳电价(元/kWh)", solution["solved_discounted_consumer_tariff"]),
+        ("折算自用电综合电价(元/kWh)", solution["solved_consumer_tariff"]),
         ("反算校验 NPV(万元)", solution["solved_npv_10k_cny"]),
         ("反算校验滚动 IRR", solution["solved_project_irr"]),
     ]

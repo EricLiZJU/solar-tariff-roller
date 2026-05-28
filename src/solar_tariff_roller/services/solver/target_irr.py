@@ -27,7 +27,7 @@ def solve_tariff_by_target_irr(
     lower_bound: float = 0.0,
     upper_bound: float = 5.0,
 ) -> TargetIrrSolveResult:
-    """Solve the consumer tariff required to achieve the target rolling IRR."""
+    """Solve the discounted consumer tariff required to achieve the target rolling IRR."""
 
     effective_target_irr = target_irr if target_irr is not None else payload.finance.target_irr
     if effective_target_irr is None:
@@ -40,9 +40,11 @@ def solve_tariff_by_target_irr(
     solve_payload.finance.target_irr = effective_target_irr
     solve_payload.finance.discount_rate = effective_target_irr
 
-    def objective(consumer_tariff: float) -> float:
+    def objective(discounted_consumer_tariff: float) -> float:
         trial_payload = solve_payload.model_copy(deep=True)
-        trial_payload.tariff.consumer_tariff = consumer_tariff
+        trial_payload.tariff.consumer_tariff = (
+            discounted_consumer_tariff / trial_payload.tariff.consumer_discount_rate
+        )
         result = build_cashflow_result(trial_payload)
         if result.project_irr is None:
             raise ValueError("Unable to calculate project IRR for the current tariff")
@@ -62,7 +64,10 @@ def solve_tariff_by_target_irr(
         solved_tariff = brentq(objective, lower_bound, upper_bound)
 
     solved_payload = solve_payload.model_copy(deep=True)
-    solved_payload.tariff.consumer_tariff = round(float(solved_tariff), 6)
+    solved_payload.tariff.consumer_tariff = round(
+        float(solved_tariff) / solved_payload.tariff.consumer_discount_rate,
+        6,
+    )
     solved_result = build_cashflow_result(solved_payload)
 
     return TargetIrrSolveResult(

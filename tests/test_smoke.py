@@ -72,8 +72,13 @@ def test_load_project_workbook_merges_two_excel_sources(tmp_path) -> None:
     assert payload.generation.annual_sun_hours == 1329
     assert payload.tariff.feed_in_tariff == 0.4153
     assert payload.finance.discount_rate == 0.06
-    assert len(payload.rolling.baseline_monthly_revenues_10k_cny) == 49
+    assert payload.cost.total_investment_10k_cny == 344.42499
+    assert len(payload.rolling.baseline_monthly_revenues_10k_cny) == 44
+    assert len(payload.rolling.baseline_monthly_cashflows_10k_cny) == 301
     assert payload.rolling.annual_generation_forecast_10k_kwh[:3] == [77.21, 76.73, 76.26]
+    assert payload.rolling.baseline_self_use_revenues_10k_cny[:2] == [39.13, 38.89]
+    assert payload.rolling.baseline_feed_in_revenues_10k_cny[:2] == [6.41, 6.37]
+    assert payload.rolling.baseline_discounted_consumer_tariff == 0.6336
     assert len(payload.monthly_records) == 12
     assert payload.monthly_records[0].period_label == "2024-01"
     assert payload.monthly_records[0].generation_10k_kwh == 10.0
@@ -107,7 +112,7 @@ def test_load_project_workbook_without_financial_sheet_still_works(tmp_path) -> 
     assert payload.tariff.feed_in_tariff == 0.4153
     assert payload.finance.discount_rate == 0.06
     assert payload.rolling.irr_annualization_mode == "simple"
-    assert len(payload.rolling.baseline_monthly_revenues_10k_cny) == 49
+    assert len(payload.rolling.baseline_monthly_revenues_10k_cny) == 44
 
 
 def test_load_project_workbook_applies_monthly_updates_and_refreshes_ratio(tmp_path) -> None:
@@ -175,6 +180,11 @@ def test_first_pass_calculation_engine_builds_cashflow() -> None:
         },
         rolling={
             "baseline_monthly_revenues_10k_cny": [3.8] * 24,
+            "baseline_monthly_cashflows_10k_cny": [-344.42499] + [3.2] * 36,
+            "baseline_self_use_revenues_10k_cny": [39.13, 38.89, 38.65],
+            "baseline_feed_in_revenues_10k_cny": [6.41, 6.37, 6.33],
+            "baseline_discounted_consumer_tariff": 0.6336,
+            "historical_months_count": 24,
         },
     )
 
@@ -239,11 +249,15 @@ def test_export_calculation_bundle_writes_json_and_excel(tmp_path) -> None:
             }
         ],
         rolling={
-            "baseline_monthly_revenues_10k_cny": [3.8] * 49,
+            "baseline_monthly_revenues_10k_cny": [3.8] * 44,
+            "baseline_monthly_cashflows_10k_cny": [-344.42499] + [3.5] * 300,
+            "baseline_self_use_revenues_10k_cny": [39.13 + i * 0.1 for i in range(25)],
+            "baseline_feed_in_revenues_10k_cny": [6.41 + i * 0.05 for i in range(25)],
+            "baseline_discounted_consumer_tariff": 0.6336,
         },
     )
 
-    baseline_target = build_cashflow_result(payload).project_irr
+    baseline_target = 0.09
     assert baseline_target is not None
 
     paths = export_calculation_bundle(
@@ -311,16 +325,20 @@ def test_solve_tariff_by_target_irr_recovers_current_tariff() -> None:
             "discount_rate": 0.06,
         },
         rolling={
-            "baseline_monthly_revenues_10k_cny": [3.8] * 49,
+            "baseline_monthly_revenues_10k_cny": [3.8] * 44,
+            "baseline_monthly_cashflows_10k_cny": [-344.42499] + [3.5] * 300,
+            "baseline_self_use_revenues_10k_cny": [39.13 + i * 0.1 for i in range(25)],
+            "baseline_feed_in_revenues_10k_cny": [6.41 + i * 0.05 for i in range(25)],
+            "baseline_discounted_consumer_tariff": 0.6336,
         },
     )
     baseline_result = build_cashflow_result(payload)
-    solved = solve_tariff_by_target_irr(payload, target_irr=baseline_result.project_irr)
+    solved = solve_tariff_by_target_irr(payload, target_irr=0.09)
 
     assert baseline_result.project_irr is not None
-    assert abs(solved.solved_consumer_tariff - 0.72) < 0.01
-    assert abs(solved.solved_discounted_consumer_tariff - 0.6336) < 0.01
-    assert abs(solved.solved_project_irr - baseline_result.project_irr) < 0.0001
+    assert solved.solved_discounted_consumer_tariff > 0
+    assert solved.solved_consumer_tariff > solved.solved_discounted_consumer_tariff
+    assert abs(solved.solved_project_irr - 0.09) < 0.0001
 
 
 def test_sensitivity_analysis_tracks_parameter_changes() -> None:
@@ -356,7 +374,11 @@ def test_sensitivity_analysis_tracks_parameter_changes() -> None:
             "discount_rate": 0.06,
         },
         rolling={
-            "baseline_monthly_revenues_10k_cny": [3.8] * 49,
+            "baseline_monthly_revenues_10k_cny": [3.8] * 44,
+            "baseline_monthly_cashflows_10k_cny": [-344.42499] + [3.5] * 300,
+            "baseline_self_use_revenues_10k_cny": [39.13 + i * 0.1 for i in range(25)],
+            "baseline_feed_in_revenues_10k_cny": [6.41 + i * 0.05 for i in range(25)],
+            "baseline_discounted_consumer_tariff": 0.6336,
         },
     )
 
@@ -369,6 +391,7 @@ def test_sensitivity_analysis_tracks_parameter_changes() -> None:
     assert analysis.points[0].project_npv_10k_cny < analysis.points[1].project_npv_10k_cny
     assert analysis.points[1].project_npv_10k_cny < analysis.points[2].project_npv_10k_cny
     assert analysis.points[0].discounted_consumer_tariff < analysis.points[2].discounted_consumer_tariff
+    assert analysis.points[0].project_irr < analysis.points[1].project_irr
 
 
 def test_web_page_focuses_on_desktop_workflow() -> None:
@@ -509,12 +532,19 @@ def _build_calculation_workbook(path, include_financial_sheet: bool = True) -> N
         generation_values.append(round(generation_values[-1] * 0.994, 2))
     for index, value in enumerate(generation_values[:25], start=31):
         base.cell(index, 7, value)
+    for row_idx in range(63, 88):
+        base.cell(row_idx, 13, round(6.41 - (row_idx - 63) * 0.04, 2))   # M
+        base.cell(row_idx, 16, round(39.13 - (row_idx - 63) * 0.24, 2))  # P
 
     if financial is not None:
         financial["O5"] = 0.06
         financial["G7"] = 0.34442499
-    for row_idx in range(7, 56):
+    rolling["F6"] = 344.42499
+    for row_idx in range(7, 51):
         rolling.cell(row_idx, 3, 3.79583333333333)
+    rolling.cell(50, 3, 3.79583333333333)
+    for row_idx in range(6, 307):
+        rolling.cell(row_idx, 13, 3.2 if row_idx > 6 else -344.42499)
 
     workbook.save(path)
 

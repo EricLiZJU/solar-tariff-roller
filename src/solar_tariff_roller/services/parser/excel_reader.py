@@ -102,6 +102,9 @@ def parse_calculation_workbook(workbook_path: str | Path) -> dict[str, Any]:
 
     capacity_mwp = _as_float(base_sheet["C5"].value) or _as_float(base_sheet["C10"].value) or 0.0
     self_consumption_ratio = _as_float(base_sheet["C15"].value) or 0.0
+    total_investment = (
+        _as_float(rolling_sheet["F6"].value) if rolling_sheet is not None else None
+    ) or _required_float(base_sheet["E10"].value, "项目基础数据!E10")
 
     discount_rate = None
     if financial_sheet is not None:
@@ -136,7 +139,7 @@ def parse_calculation_workbook(workbook_path: str | Path) -> dict[str, Any]:
         },
         "cost": {
             "capex_per_watt": _required_float(base_sheet["D10"].value, "项目基础数据!D10"),
-            "total_investment_10k_cny": _required_float(base_sheet["E10"].value, "项目基础数据!E10"),
+            "total_investment_10k_cny": total_investment,
             "annual_rent_10k_cny": _as_float(base_sheet["F10"].value) or 0.0,
             "annual_om_10k_cny": _as_float(base_sheet["G10"].value) or 0.0,
             "annual_insurance_10k_cny": (
@@ -157,10 +160,15 @@ def parse_calculation_workbook(workbook_path: str | Path) -> dict[str, Any]:
         },
         "rolling": {
             "baseline_monthly_revenues_10k_cny": _parse_rolling_baseline_revenues(rolling_sheet),
+            "baseline_monthly_cashflows_10k_cny": _parse_rolling_baseline_cashflows(rolling_sheet),
             "annual_generation_forecast_10k_kwh": _parse_annual_generation_forecast(
                 base_sheet,
                 operation_years=25,
             ),
+            "baseline_self_use_revenues_10k_cny": _parse_yearly_series(base_sheet, 63, 87, 16),
+            "baseline_feed_in_revenues_10k_cny": _parse_yearly_series(base_sheet, 63, 87, 13),
+            "baseline_discounted_consumer_tariff": _required_float(base_sheet["D26"].value, "项目基础数据!D26"),
+            "historical_months_count": 44,
             "irr_annualization_mode": "simple",
         },
         "monthly_records": [],
@@ -281,8 +289,21 @@ def _parse_rolling_baseline_revenues(sheet: Any | None) -> list[float]:
         return []
 
     values: list[float] = []
-    for row_idx in range(7, 56):
+    for row_idx in range(7, 51):
         value = _as_float(sheet.cell(row_idx, 3).value)
+        values.append(value or 0.0)
+    return values
+
+
+def _parse_rolling_baseline_cashflows(sheet: Any | None) -> list[float]:
+    """Read the monthly cashflow baseline used to validate the current IRR."""
+
+    if sheet is None:
+        return []
+
+    values: list[float] = []
+    for row_idx in range(6, 307):
+        value = _as_float(sheet.cell(row_idx, 13).value)
         values.append(value or 0.0)
     return values
 
@@ -296,6 +317,17 @@ def _parse_annual_generation_forecast(base_sheet: Any, operation_years: int) -> 
         if value is None:
             break
         values.append(round(value, 2))
+    return values
+
+
+def _parse_yearly_series(sheet: Any, start_row: int, end_row: int, column_idx: int) -> list[float]:
+    """Read one yearly value block from a fixed column."""
+
+    values: list[float] = []
+    for row_idx in range(start_row, end_row + 1):
+        value = _as_float(sheet.cell(row_idx, column_idx).value)
+        if value is not None:
+            values.append(float(value))
     return values
 
 

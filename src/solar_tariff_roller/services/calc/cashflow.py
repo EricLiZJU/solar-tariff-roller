@@ -1,4 +1,4 @@
-"""Rolling cashflow calculations aligned with the customer script."""
+"""Rolling cashflow calculations aligned with the latest customer script."""
 
 from __future__ import annotations
 
@@ -17,87 +17,233 @@ from solar_tariff_roller.services.calc.generation import (
 
 
 def build_cashflow_result(payload: CalculationInput) -> ProjectCashflowResult:
-    """Build rolling cashflow exactly following the customer's monthly script logic."""
+    """Build rolling cashflow exactly following the customer's latest script."""
 
     initial_generation = round(estimate_initial_generation_10k_kwh(payload), 4)
     discounted_consumer_tariff = round(payload.discounted_consumer_tariff, 6)
     initial_outflow = round(payload.cost.total_investment_10k_cny, 4)
     capex_input_vat = _calc_capex_input_vat(payload)
     annual_generation = _resolve_annual_generation(payload)
-    baseline_revenues = _resolve_baseline_revenues(payload)
-    historical_months_count = len(baseline_revenues)
-    insurance_per_year = round(payload.cost.total_investment_10k_cny * 0.001, 8)
+    p_values = _resolve_yearly_block(
+        payload.rolling.baseline_self_use_revenues_10k_cny,
+        [round(value * payload.discounted_consumer_tariff, 8) for value in _self_use_energy(annual_generation, payload)],
+        payload.project.operation_years,
+    )
+    m_values = _resolve_yearly_block(
+        payload.rolling.baseline_feed_in_revenues_10k_cny,
+        [round(value * payload.tariff.feed_in_tariff, 8) for value in _grid_energy(annual_generation, payload)],
+        payload.project.operation_years,
+    )
+    baseline_revenues = list(payload.rolling.baseline_monthly_revenues_10k_cny)
+    historical_months_count = min(payload.rolling.historical_months_count, len(baseline_revenues))
+    baseline_cashflows = list(payload.rolling.baseline_monthly_cashflows_10k_cny)
+
+    insurance_per_year = round(initial_outflow * 0.001, 8)
     om_half = round(payload.cost.annual_om_10k_cny / 2, 8)
-    monthly_discount_rate = payload.finance.discount_rate / 12 if payload.finance.discount_rate else 0.0
 
-    annual_self_use = [round(value * payload.consumption.self_consumption_ratio, 8) for value in annual_generation]
-    annual_grid_use = [round(value * (1 - payload.consumption.self_consumption_ratio), 8) for value in annual_generation]
-    annual_self_revenue = [round(value * discounted_consumer_tariff, 8) for value in annual_self_use]
-    annual_grid_revenue = [round(value * payload.tariff.feed_in_tariff, 8) for value in annual_grid_use]
-    annual_total_revenue = [
-        round(annual_self_revenue[index] + annual_grid_revenue[index], 8)
-        for index in range(payload.project.operation_years)
-    ]
+    baseline_discounted_tariff = payload.rolling.baseline_discounted_consumer_tariff or discounted_consumer_tariff
 
-    monthly_revenues = list(baseline_revenues)
-    start_year_index = len(baseline_revenues) // 12
-    for year_index in range(start_year_index, payload.project.operation_years):
-        monthly_revenue = annual_total_revenue[year_index] / 12
-        for _ in range(12):
-            monthly_revenues.append(monthly_revenue)
-    total_months = payload.project.operation_years * 12
-    monthly_revenues = monthly_revenues[:total_months]
+    model_cashflows = _build_cashflows_for_discounted_tariff(
+        payload=payload,
+        discounted_tariff=discounted_consumer_tariff,
+        baseline_discounted_tariff=baseline_discounted_tariff,
+        annual_generation=annual_generation,
+        p_values=p_values,
+        m_values=m_values,
+        baseline_revenues=baseline_revenues,
+        historical_months_count=historical_months_count,
+        insurance_per_year=insurance_per_year,
+        om_half=om_half,
+    )
+    display_cashflows = (
+        baseline_cashflows
+        if baseline_cashflows and abs(discounted_consumer_tariff - baseline_discounted_tariff) < 1e-9
+        else model_cashflows
+    )
+    current_monthly_irr = _calculate_monthly_irr(display_cashflows)
+    current_project_irr = round(current_monthly_irr * 12, 6) if current_monthly_irr is not None else None
 
-    monthly_rows: list[MonthlyProjection] = []
-    monthly_cashflows = [-initial_outflow]
-    cumulative_cashflow = -initial_outflow
-    vat_credit_carry = -capex_input_vat
+    monthly_rows = _build_monthly_rows_for_discounted_tariff(
+        payload=payload,
+        discounted_tariff=discounted_consumer_tariff,
+        baseline_discounted_tariff=baseline_discounted_tariff,
+        annual_generation=annual_generation,
+        p_values=p_values,
+        m_values=m_values,
+        baseline_revenues=baseline_revenues,
+        historical_months_count=historical_months_count,
+        insurance_per_year=insurance_per_year,
+        om_half=om_half,
+    )
 
-    for month_index in range(1, total_months + 1):
-        operating_year = ((month_index - 1) // 12) + 1
-        month_in_year = ((month_index - 1) % 12) + 1
-        annual_generation_value = annual_generation[operating_year - 1]
-        generation_10k_kwh = round(annual_generation_value / 12, 4)
-        self_consumed_10k_kwh = round(generation_10k_kwh * payload.consumption.self_consumption_ratio, 4)
-        exported_10k_kwh = round(generation_10k_kwh - self_consumed_10k_kwh, 4)
+    annual_rows = _aggregate_annual_rows(payload, monthly_rows, annual_generation)
 
-        gross_revenue = round(monthly_revenues[month_index - 1], 8)
-        insurance_cost = insurance_per_year if month_index % 12 == 1 else 0.0
-        om_cost = om_half if month_index % 6 == 1 else 0.0
-        total_cost = round(insurance_cost + om_cost, 8)
+    return ProjectCashflowResult(
+        initial_generation_10k_kwh=initial_generation,
+        discounted_consumer_tariff=discounted_consumer_tariff,
+        monthly_irr=current_monthly_irr,
+        historical_months_count=historical_months_count,
+        monthly_projections=monthly_rows,
+        annual_projections=annual_rows,
+        capex_input_vat_10k_cny=capex_input_vat,
+        initial_outflow_10k_cny=initial_outflow,
+        project_npv_10k_cny=round(_calculate_monthly_npv(model_cashflows, payload.finance.discount_rate / 12 if payload.finance.discount_rate else 0.0), 4),
+        project_irr=current_project_irr,
+        cumulative_cashflow_10k_cny=monthly_rows[-1].cumulative_cashflow_10k_cny if monthly_rows else -initial_outflow,
+    )
+
+
+def build_project_irr_for_discounted_tariff(payload: CalculationInput, discounted_tariff: float) -> float | None:
+    """Calculate project IRR for one discounted tariff using the latest script logic."""
+
+    annual_generation = _resolve_annual_generation(payload)
+    p_values = _resolve_yearly_block(
+        payload.rolling.baseline_self_use_revenues_10k_cny,
+        [round(value * payload.discounted_consumer_tariff, 8) for value in _self_use_energy(annual_generation, payload)],
+        payload.project.operation_years,
+    )
+    m_values = _resolve_yearly_block(
+        payload.rolling.baseline_feed_in_revenues_10k_cny,
+        [round(value * payload.tariff.feed_in_tariff, 8) for value in _grid_energy(annual_generation, payload)],
+        payload.project.operation_years,
+    )
+    cashflows = _build_cashflows_for_discounted_tariff(
+        payload=payload,
+        discounted_tariff=discounted_tariff,
+        baseline_discounted_tariff=(payload.rolling.baseline_discounted_consumer_tariff or payload.discounted_consumer_tariff),
+        annual_generation=annual_generation,
+        p_values=p_values,
+        m_values=m_values,
+        baseline_revenues=list(payload.rolling.baseline_monthly_revenues_10k_cny),
+        historical_months_count=payload.rolling.historical_months_count,
+        insurance_per_year=round(payload.cost.total_investment_10k_cny * 0.001, 8),
+        om_half=round(payload.cost.annual_om_10k_cny / 2, 8),
+    )
+    monthly_irr = _calculate_monthly_irr(cashflows)
+    if monthly_irr is None:
+        return None
+    return round(monthly_irr * 12, 6)
+
+
+def _build_cashflows_for_discounted_tariff(
+    *,
+    payload: CalculationInput,
+    discounted_tariff: float,
+    baseline_discounted_tariff: float,
+    annual_generation: list[float],
+    p_values: list[float],
+    m_values: list[float],
+    baseline_revenues: list[float],
+    historical_months_count: int,
+    insurance_per_year: float,
+    om_half: float,
+) -> list[float]:
+    """Build month-0 to month-300 cashflows using the latest script logic."""
+
+    monthly_revenues = _build_monthly_revenues_for_discounted_tariff(
+        payload=payload,
+        discounted_tariff=discounted_tariff,
+        baseline_discounted_tariff=baseline_discounted_tariff,
+        annual_generation=annual_generation,
+        p_values=p_values,
+        m_values=m_values,
+        baseline_revenues=baseline_revenues,
+        historical_months_count=historical_months_count,
+    )
+    investment = payload.cost.total_investment_10k_cny
+    cashflows = [-investment]
+    vat_credit_carry = -_calc_capex_input_vat(payload)
+
+    for month_num, gross_revenue in enumerate(monthly_revenues, start=1):
+        insurance_cost = insurance_per_year if month_num % 12 == 1 else 0.0
+        om_cost = om_half if month_num % 6 == 1 else 0.0
+        total_cost = insurance_cost + om_cost
 
         input_vat = round(total_cost / 1.06 * 0.06, 2) if total_cost > 0 else 0.0
-        revenue_excluding_vat = round(gross_revenue / 1.13, 2) if gross_revenue > 0 else 0.0
-        output_vat = round(revenue_excluding_vat * 0.13, 2) if revenue_excluding_vat > 0 else 0.0
-        vat_balance = round(output_vat - input_vat + vat_credit_carry, 2)
+        revenue_excluding_vat = round(gross_revenue / 1.13, 2)
+        output_vat = round(revenue_excluding_vat * 0.13, 2)
+        vat_balance = output_vat - input_vat + vat_credit_carry
+        vat_credit_carry = min(vat_balance, 0) if vat_balance < 0 else 0
+        surcharge_tax = round(vat_balance * 0.12, 2) if vat_balance > 0 else 0.0
+        net_cashflow = gross_revenue - total_cost - (vat_balance if vat_balance > 0 else 0.0) - surcharge_tax
+        cashflows.append(net_cashflow)
+
+    return cashflows
+
+
+def _build_monthly_rows_for_discounted_tariff(
+    *,
+    payload: CalculationInput,
+    discounted_tariff: float,
+    baseline_discounted_tariff: float,
+    annual_generation: list[float],
+    p_values: list[float],
+    m_values: list[float],
+    baseline_revenues: list[float],
+    historical_months_count: int,
+    insurance_per_year: float,
+    om_half: float,
+) -> list[MonthlyProjection]:
+    """Build detailed monthly rows for UI/export under one discounted tariff."""
+
+    monthly_revenues = _build_monthly_revenues_for_discounted_tariff(
+        payload=payload,
+        discounted_tariff=discounted_tariff,
+        baseline_discounted_tariff=baseline_discounted_tariff,
+        annual_generation=annual_generation,
+        p_values=p_values,
+        m_values=m_values,
+        baseline_revenues=baseline_revenues,
+        historical_months_count=historical_months_count,
+    )
+    monthly_rows: list[MonthlyProjection] = []
+    cumulative_cashflow = -payload.cost.total_investment_10k_cny
+    vat_credit_carry = -_calc_capex_input_vat(payload)
+    monthly_discount_rate = payload.finance.discount_rate / 12 if payload.finance.discount_rate else 0.0
+    q_values = _build_q_values(discounted_tariff, payload.discounted_consumer_tariff, p_values, m_values)
+
+    for month_num, gross_revenue in enumerate(monthly_revenues, start=1):
+        operating_year = ((month_num - 1) // 12) + 1
+        month_in_year = ((month_num - 1) % 12) + 1
+        generation_10k_kwh = round(annual_generation[operating_year - 1] / 12, 4)
+        self_consumed_10k_kwh = round(generation_10k_kwh * payload.consumption.self_consumption_ratio, 4)
+        exported_10k_kwh = round(generation_10k_kwh - self_consumed_10k_kwh, 4)
+        insurance_cost = insurance_per_year if month_num % 12 == 1 else 0.0
+        om_cost = om_half if month_num % 6 == 1 else 0.0
+        total_cost = round(insurance_cost + om_cost, 8)
+        input_vat = round(total_cost / 1.06 * 0.06, 2) if total_cost > 0 else 0.0
+        revenue_excluding_vat = round(gross_revenue / 1.13, 2)
+        output_vat = round(revenue_excluding_vat * 0.13, 2)
+        vat_balance = output_vat - input_vat + vat_credit_carry
         vat_payable = round(vat_balance, 2) if vat_balance > 0 else 0.0
-        vat_credit_carry = round(min(vat_balance, 0.0), 2)
+        vat_credit_carry = min(vat_balance, 0) if vat_balance < 0 else 0
         surcharge_tax = round(vat_balance * 0.12, 2) if vat_balance > 0 else 0.0
         net_cashflow = gross_revenue - total_cost - vat_payable - surcharge_tax
-        discount_factor = round(1 / ((1 + monthly_discount_rate) ** month_index), 8) if monthly_discount_rate else 1.0
+        discount_factor = round(1 / ((1 + monthly_discount_rate) ** month_num), 8) if monthly_discount_rate else 1.0
         discounted_cashflow = round(net_cashflow * discount_factor, 8)
         cumulative_cashflow = round(cumulative_cashflow + net_cashflow, 8)
+        annualized_revenue_basis = round(q_values[operating_year - 1], 8)
 
         monthly_rows.append(
             MonthlyProjection(
-                month_index=month_index,
+                month_index=month_num,
                 operating_year=operating_year,
                 month_in_year=month_in_year,
-                period_type="historical" if month_index <= historical_months_count else "projected",
+                period_type="historical" if month_num <= historical_months_count else "projected",
                 generation_10k_kwh=generation_10k_kwh,
                 self_consumed_10k_kwh=self_consumed_10k_kwh,
                 exported_10k_kwh=exported_10k_kwh,
-                gross_revenue_10k_cny=gross_revenue,
-                annualized_revenue_basis_10k_cny=round(annual_total_revenue[operating_year - 1], 8),
+                gross_revenue_10k_cny=round(gross_revenue, 8),
+                annualized_revenue_basis_10k_cny=annualized_revenue_basis,
                 insurance_cost_10k_cny=insurance_cost,
                 om_cost_10k_cny=om_cost,
                 replacement_cost_10k_cny=0.0,
                 total_cost_10k_cny=total_cost,
                 input_vat_10k_cny=input_vat,
                 output_vat_10k_cny=output_vat,
-                vat_balance_10k_cny=vat_balance,
+                vat_balance_10k_cny=round(vat_balance, 8),
                 vat_payable_10k_cny=vat_payable,
-                vat_credit_carry_10k_cny=vat_credit_carry,
+                vat_credit_carry_10k_cny=round(vat_credit_carry, 8),
                 surcharge_tax_10k_cny=surcharge_tax,
                 net_cashflow_10k_cny=round(net_cashflow, 8),
                 discount_factor=discount_factor,
@@ -105,30 +251,65 @@ def build_cashflow_result(payload: CalculationInput) -> ProjectCashflowResult:
                 cumulative_cashflow_10k_cny=cumulative_cashflow,
             )
         )
-        monthly_cashflows.append(net_cashflow)
 
-    annual_rows = _aggregate_annual_rows(payload, monthly_rows, annual_generation)
-    npv = round(_calculate_monthly_npv(monthly_cashflows, monthly_discount_rate), 4)
-    monthly_irr = _calculate_monthly_irr(monthly_cashflows)
-    project_irr = round(monthly_irr * 12, 6) if monthly_irr is not None else None
+    return monthly_rows
 
-    return ProjectCashflowResult(
-        initial_generation_10k_kwh=initial_generation,
-        discounted_consumer_tariff=discounted_consumer_tariff,
-        monthly_irr=monthly_irr,
-        historical_months_count=historical_months_count,
-        monthly_projections=monthly_rows,
-        annual_projections=annual_rows,
-        capex_input_vat_10k_cny=capex_input_vat,
-        initial_outflow_10k_cny=initial_outflow,
-        project_npv_10k_cny=npv,
-        project_irr=project_irr,
-        cumulative_cashflow_10k_cny=cumulative_cashflow,
-    )
+
+def _build_monthly_revenues_for_discounted_tariff(
+    *,
+    payload: CalculationInput,
+    discounted_tariff: float,
+    baseline_discounted_tariff: float,
+    annual_generation: list[float],
+    p_values: list[float],
+    m_values: list[float],
+    baseline_revenues: list[float],
+    historical_months_count: int,
+) -> list[float]:
+    """Build the monthly C series exactly like the latest customer script."""
+
+    old_discounted_tariff = baseline_discounted_tariff
+    mixed_old = payload.consumption.self_consumption_ratio * old_discounted_tariff + (
+        1 - payload.consumption.self_consumption_ratio
+    ) * payload.tariff.feed_in_tariff
+    mixed_new = payload.consumption.self_consumption_ratio * discounted_tariff + (
+        1 - payload.consumption.self_consumption_ratio
+    ) * payload.tariff.feed_in_tariff
+    ratio = mixed_new / mixed_old if mixed_old else 1.0
+
+    monthly_revenues: list[float] = []
+    for revenue in baseline_revenues[:historical_months_count]:
+        monthly_revenues.append(revenue * ratio)
+
+    q_values = _build_q_values(discounted_tariff, old_discounted_tariff, p_values, m_values)
+    if q_values:
+        year_one_tail_months = max(0, 12 - historical_months_count)
+        if year_one_tail_months:
+            monthly_revenues.extend([q_values[0] / 12] * year_one_tail_months)
+        for year_index in range(1, len(q_values)):
+            monthly_revenues.extend([q_values[year_index] / 12] * 12)
+
+    total_months = payload.project.operation_years * 12
+    return monthly_revenues[:total_months]
+
+
+def _build_q_values(
+    discounted_tariff: float,
+    old_discounted_tariff: float,
+    p_values: list[float],
+    m_values: list[float],
+) -> list[float]:
+    """Rebuild yearly Q values from yearly P and M values."""
+
+    q_values: list[float] = []
+    for index in range(min(len(p_values), len(m_values))):
+        p_new = p_values[index] * (discounted_tariff / old_discounted_tariff) if old_discounted_tariff else 0.0
+        q_values.append(m_values[index] + p_new)
+    return q_values
 
 
 def _resolve_annual_generation(payload: CalculationInput) -> list[float]:
-    """Use the workbook annual generation block like the customer script."""
+    """Use the workbook annual generation forecast block."""
 
     values = list(payload.rolling.annual_generation_forecast_10k_kwh[: payload.project.operation_years])
     while len(values) < payload.project.operation_years:
@@ -136,10 +317,21 @@ def _resolve_annual_generation(payload: CalculationInput) -> list[float]:
     return [float(value) for value in values]
 
 
-def _resolve_baseline_revenues(payload: CalculationInput) -> list[float]:
-    """Use the fixed monthly baseline revenue block from the rolling sheet."""
+def _resolve_yearly_block(values: list[float], fallback: list[float], operation_years: int) -> list[float]:
+    """Use workbook yearly values when present, otherwise fall back."""
 
-    return [float(value) for value in payload.rolling.baseline_monthly_revenues_10k_cny]
+    resolved = list(values[:operation_years])
+    while len(resolved) < operation_years:
+        resolved.append(fallback[len(resolved)] if len(resolved) < len(fallback) else 0.0)
+    return [float(value) for value in resolved]
+
+
+def _self_use_energy(annual_generation: list[float], payload: CalculationInput) -> list[float]:
+    return [float(value * payload.consumption.self_consumption_ratio) for value in annual_generation]
+
+
+def _grid_energy(annual_generation: list[float], payload: CalculationInput) -> list[float]:
+    return [float(value * (1 - payload.consumption.self_consumption_ratio)) for value in annual_generation]
 
 
 def _aggregate_annual_rows(
@@ -171,7 +363,7 @@ def _aggregate_annual_rows(
         annual_rows.append(
             AnnualProjection(
                 year=year,
-                degradation_pct=project_generation_for_year(payload, year)[1],
+                degradation_pct=0.0,
                 generation_10k_kwh=round(annual_generation[year - 1], 2),
                 self_consumed_10k_kwh=self_consumed_10k_kwh,
                 exported_10k_kwh=exported_10k_kwh,

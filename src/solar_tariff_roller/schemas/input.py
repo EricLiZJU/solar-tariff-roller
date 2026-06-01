@@ -122,9 +122,31 @@ class RollingParamsInput(BaseModel):
         default_factory=list,
         description="滚动表中已固化的历史月度含税收入",
     )
+    baseline_monthly_cashflows_10k_cny: list[float] = Field(
+        default_factory=list,
+        description="滚动表中用于校验当前 IRR 的月度现金流序列",
+    )
     annual_generation_forecast_10k_kwh: list[float] = Field(
         default_factory=list,
         description="滚动表中按年给出的后续发电量预测",
+    )
+    baseline_self_use_revenues_10k_cny: list[float] = Field(
+        default_factory=list,
+        description="项目基础数据表中按年给出的自用电费 P 列",
+    )
+    baseline_feed_in_revenues_10k_cny: list[float] = Field(
+        default_factory=list,
+        description="项目基础数据表中按年给出的上网电费 M 列",
+    )
+    baseline_discounted_consumer_tariff: float = Field(
+        default=0.0,
+        ge=0,
+        description="滚动脚本中的当前自用电折后价 O_old",
+    )
+    historical_months_count: int = Field(
+        default=44,
+        ge=0,
+        description="滚动表中作为硬编码基线保留的历史月份数",
     )
     irr_annualization_mode: str = Field(
         default="simple",

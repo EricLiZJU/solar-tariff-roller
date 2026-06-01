@@ -94,6 +94,22 @@ def test_load_project_workbook_merges_two_excel_sources(tmp_path) -> None:
     ]
 
 
+def test_load_project_workbook_without_financial_sheet_still_works(tmp_path) -> None:
+    calculation_path = tmp_path / "【测算表】测试项目.xlsx"
+    station_path = tmp_path / "电站统计.xlsx"
+
+    _build_calculation_workbook(calculation_path, include_financial_sheet=False)
+    _build_station_workbook(station_path)
+
+    payload = load_project_workbook(calculation_path, station_path)
+
+    assert payload.project.project_name == "测试项目"
+    assert payload.tariff.feed_in_tariff == 0.4153
+    assert payload.finance.discount_rate == 0.06
+    assert payload.rolling.irr_annualization_mode == "simple"
+    assert len(payload.rolling.baseline_monthly_revenues_10k_cny) == 49
+
+
 def test_load_project_workbook_applies_monthly_updates_and_refreshes_ratio(tmp_path) -> None:
     calculation_path = tmp_path / "【测算表】测试项目.xlsx"
     station_path = tmp_path / "电站统计.xlsx"
@@ -464,11 +480,11 @@ def test_post_solve_accepts_uploaded_workbooks_and_download_route(tmp_path) -> N
     )
 
 
-def _build_calculation_workbook(path) -> None:
+def _build_calculation_workbook(path, include_financial_sheet: bool = True) -> None:
     workbook = Workbook()
     base = workbook.active
     base.title = "项目基础数据"
-    financial = workbook.create_sheet("分年现金流量表及财务指标")
+    financial = workbook.create_sheet("分年现金流量表及财务指标") if include_financial_sheet else None
     rolling = workbook.create_sheet("月滚动现金流量表")
 
     base["C5"] = 0.726635
@@ -494,8 +510,9 @@ def _build_calculation_workbook(path) -> None:
     for index, value in enumerate(generation_values[:25], start=31):
         base.cell(index, 7, value)
 
-    financial["O5"] = 0.06
-    financial["G7"] = 0.34442499
+    if financial is not None:
+        financial["O5"] = 0.06
+        financial["G7"] = 0.34442499
     for row_idx in range(7, 56):
         rolling.cell(row_idx, 3, 3.79583333333333)
 

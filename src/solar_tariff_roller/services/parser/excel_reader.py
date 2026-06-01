@@ -97,15 +97,17 @@ def parse_calculation_workbook(workbook_path: str | Path) -> dict[str, Any]:
 
     workbook = load_workbook(workbook_path, data_only=True)
     base_sheet = workbook[PROJECT_BASE_SHEET]
-    financial_sheet = workbook[FINANCIAL_SHEET]
+    financial_sheet = workbook[FINANCIAL_SHEET] if FINANCIAL_SHEET in workbook.sheetnames else None
     rolling_sheet = workbook[ROLLING_SHEET] if ROLLING_SHEET in workbook.sheetnames else None
 
     capacity_mwp = _as_float(base_sheet["C5"].value) or _as_float(base_sheet["C10"].value) or 0.0
     self_consumption_ratio = _as_float(base_sheet["C15"].value) or 0.0
 
-    discount_rate = _as_float(financial_sheet["O5"].value)
-    if discount_rate is None:
-        discount_rate = _as_float(financial_sheet["N3"].value)
+    discount_rate = None
+    if financial_sheet is not None:
+        discount_rate = _as_float(financial_sheet["O5"].value)
+        if discount_rate is None:
+            discount_rate = _as_float(financial_sheet["N3"].value)
 
     return {
         "project": {
@@ -137,8 +139,12 @@ def parse_calculation_workbook(workbook_path: str | Path) -> dict[str, Any]:
             "total_investment_10k_cny": _required_float(base_sheet["E10"].value, "项目基础数据!E10"),
             "annual_rent_10k_cny": _as_float(base_sheet["F10"].value) or 0.0,
             "annual_om_10k_cny": _as_float(base_sheet["G10"].value) or 0.0,
-            "annual_insurance_10k_cny": _as_float(financial_sheet["G7"].value) or 0.0,
-            "replacement_costs_10k_cny_by_year": _parse_replacement_costs(financial_sheet),
+            "annual_insurance_10k_cny": (
+                _as_float(financial_sheet["G7"].value) or 0.0 if financial_sheet is not None else 0.0
+            ),
+            "replacement_costs_10k_cny_by_year": (
+                _parse_replacement_costs(financial_sheet) if financial_sheet is not None else {}
+            ),
         },
         "tax": {
             "output_vat_rate": 0.13,
@@ -155,7 +161,7 @@ def parse_calculation_workbook(workbook_path: str | Path) -> dict[str, Any]:
                 base_sheet,
                 operation_years=25,
             ),
-            "irr_annualization_mode": "effective",
+            "irr_annualization_mode": "simple",
         },
         "monthly_records": [],
     }

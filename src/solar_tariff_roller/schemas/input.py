@@ -127,7 +127,7 @@ class RollingParamsInput(BaseModel):
         description="滚动表中按年给出的后续发电量预测",
     )
     irr_annualization_mode: str = Field(
-        default="effective",
+        default="simple",
         description="月度 IRR 年化方式，可选 effective 或 simple",
     )
 

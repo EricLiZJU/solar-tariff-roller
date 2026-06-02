@@ -24,8 +24,8 @@ class TargetIrrSolveResult:
 def solve_tariff_by_target_irr(
     payload: CalculationInput,
     target_irr: float | None = None,
-    lower_bound: float = 0.0,
-    upper_bound: float = 5.0,
+    lower_bound: float = 0.3,
+    upper_bound: float = 0.9,
 ) -> TargetIrrSolveResult:
     """Solve the discounted consumer tariff required to achieve the target rolling IRR."""
 

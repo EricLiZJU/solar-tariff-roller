@@ -200,7 +200,7 @@ def _build_monthly_rows_for_discounted_tariff(
     cumulative_cashflow = -payload.cost.total_investment_10k_cny
     vat_credit_carry = -_calc_capex_input_vat(payload)
     monthly_discount_rate = payload.finance.discount_rate / 12 if payload.finance.discount_rate else 0.0
-    q_values = _build_q_values(discounted_tariff, payload.discounted_consumer_tariff, p_values, m_values)
+    q_values = _build_q_values(discounted_tariff, baseline_discounted_tariff, p_values, m_values)
 
     for month_num, gross_revenue in enumerate(monthly_revenues, start=1):
         operating_year = ((month_num - 1) // 12) + 1
@@ -283,10 +283,12 @@ def _build_monthly_revenues_for_discounted_tariff(
 
     q_values = _build_q_values(discounted_tariff, old_discounted_tariff, p_values, m_values)
     if q_values:
-        year_one_tail_months = max(0, 12 - historical_months_count)
-        if year_one_tail_months:
-            monthly_revenues.extend([q_values[0] / 12] * year_one_tail_months)
-        for year_index in range(1, len(q_values)):
+        monthly_revenues.extend([q_values[0] / 12] * 4)
+        if len(q_values) > 1:
+            monthly_revenues.extend([q_values[1] / 12] * 12)
+        if len(q_values) > 2:
+            monthly_revenues.extend([q_values[2] / 12] * 12)
+        for year_index in range(3, len(q_values)):
             monthly_revenues.extend([q_values[year_index] / 12] * 12)
 
     total_months = payload.project.operation_years * 12

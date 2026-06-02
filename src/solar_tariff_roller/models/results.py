@@ -47,11 +47,14 @@ class AnnualProjection:
     gross_revenue_10k_cny: float
     revenue_excluding_vat_10k_cny: float
     construction_cost_10k_cny: float
+    annual_rent_10k_cny: float
+    annual_om_10k_cny: float
     annual_cost_10k_cny: float
     annual_insurance_10k_cny: float
     annual_om_and_rent_10k_cny: float
     input_vat_10k_cny: float
     output_vat_10k_cny: float
+    annual_vat_balance_10k_cny: float
     vat_payable_10k_cny: float
     vat_credit_carry_10k_cny: float
     surcharge_tax_10k_cny: float

@@ -98,6 +98,9 @@ class TaxParamsInput(BaseModel):
     capex_input_vat_secondary_rate: float = Field(default=0.09, ge=0, le=1, description="建造成本次税率")
     capex_input_vat_primary_ratio: float = Field(default=0.7, ge=0, le=1, description="建造成本主税率占比")
     capex_input_vat_secondary_ratio: float = Field(default=0.3, ge=0, le=1, description="建造成本次税率占比")
+    annual_output_vat_rate: float = Field(default=0.13, ge=0, le=1, description="年度汇总表销项税率")
+    annual_capex_input_vat_primary_rate: float = Field(default=0.13, ge=0, le=1, description="年度汇总表建造成本主税率")
+    annual_capex_input_vat_secondary_rate: float = Field(default=0.09, ge=0, le=1, description="年度汇总表建造成本次税率")
 
     @model_validator(mode="after")
     def validate_capex_vat_ratios(self) -> "TaxParamsInput":
@@ -147,6 +150,10 @@ class RollingParamsInput(BaseModel):
         default=44,
         ge=0,
         description="滚动表中作为硬编码基线保留的历史月份数",
+    )
+    forecast_q_row_numbers: list[int] = Field(
+        default_factory=list,
+        description="滚动表预测月份在项目基础数据表中引用的 Q 行号序列",
     )
     irr_annualization_mode: str = Field(
         default="simple",

@@ -484,6 +484,10 @@ def _render_result_html(context: dict[str, object]) -> str:
     persisted_updates = context["persisted_updates"]
     first_year = calculation_result.annual_projections[0] if calculation_result.annual_projections else None
     annual_preview = calculation_result.annual_projections[:8]
+    rolling_monthly_preview = calculation_result.monthly_projections[:12]
+    actual_month_count = sum(1 for row in calculation_result.monthly_projections if row.period_type == "actual")
+    historical_month_count = sum(1 for row in calculation_result.monthly_projections if row.period_type == "historical")
+    projected_month_count = sum(1 for row in calculation_result.monthly_projections if row.period_type == "projected")
 
     sensitivity_rows = "".join(
         f"""
@@ -497,7 +501,7 @@ def _render_result_html(context: dict[str, object]) -> str:
         """
         for point in sensitivity.points
     )
-    monthly_rows = "".join(
+    actual_monthly_rows = "".join(
         f"""
         <tr>
           <td>{escape(record.period_label)}</td>
@@ -509,16 +513,34 @@ def _render_result_html(context: dict[str, object]) -> str:
         """
         for record in payload.monthly_records[-12:]
     )
+    rolling_monthly_preview_rows = "".join(
+        f"""
+        <tr class="period-row {_period_row_class(row.period_type)}" data-period="{escape(row.period_type)}">
+          <td>{row.month_index}</td>
+          <td>{row.operating_year}</td>
+          <td>{row.month_in_year}</td>
+          <td>{_render_period_type_label(row.period_type)}</td>
+          <td>{row.gross_revenue_10k_cny:.2f}</td>
+          <td>{row.total_cost_10k_cny:.2f}</td>
+          <td>{row.vat_payable_10k_cny:.2f}</td>
+          <td>{row.surcharge_tax_10k_cny:.2f}</td>
+          <td>{row.net_cashflow_10k_cny:.2f}</td>
+          <td>{row.cumulative_cashflow_10k_cny:.2f}</td>
+        </tr>
+        """
+        for row in rolling_monthly_preview
+    )
     annual_rows = "".join(
         f"""
         <tr>
           <td>{row.year}</td>
           <td>{row.generation_10k_kwh:.2f}</td>
-          <td>{row.self_consumed_10k_kwh:.3f}</td>
-          <td>{row.exported_10k_kwh:.3f}</td>
           <td>{row.gross_revenue_10k_cny:.2f}</td>
+          <td>{row.revenue_excluding_vat_10k_cny:.2f}</td>
+          <td>{row.output_vat_10k_cny:.2f}</td>
           <td>{row.annual_cost_10k_cny:.2f}</td>
-          <td>{row.vat_payable_10k_cny:.2f}</td>
+          <td>{row.input_vat_10k_cny:.2f}</td>
+          <td>{row.annual_vat_balance_10k_cny:.2f}</td>
           <td>{row.surcharge_tax_10k_cny:.2f}</td>
           <td>{row.net_cashflow_10k_cny:.2f}</td>
           <td>{row.discounted_cashflow_10k_cny:.2f}</td>
@@ -532,10 +554,37 @@ def _render_result_html(context: dict[str, object]) -> str:
           <td>{row.year}</td>
           <td>{row.degradation_pct:.2f}%</td>
           <td>{row.generation_10k_kwh:.2f}</td>
-          <td>{row.self_consumed_10k_kwh:.3f}</td>
-          <td>{row.exported_10k_kwh:.3f}</td>
           <td>{row.gross_revenue_10k_cny:.2f}</td>
+          <td>{row.revenue_excluding_vat_10k_cny:.2f}</td>
+          <td>{row.output_vat_10k_cny:.2f}</td>
+          <td>{row.construction_cost_10k_cny:.2f}</td>
+          <td>{row.annual_rent_10k_cny:.2f}</td>
+          <td>{row.annual_om_10k_cny:.2f}</td>
           <td>{row.annual_cost_10k_cny:.2f}</td>
+          <td>{row.input_vat_10k_cny:.2f}</td>
+          <td>{row.annual_vat_balance_10k_cny:.2f}</td>
+          <td>{row.surcharge_tax_10k_cny:.2f}</td>
+          <td>{row.net_cashflow_10k_cny:.2f}</td>
+          <td>{row.cumulative_cashflow_10k_cny:.2f}</td>
+          <td>{row.present_value_factor:.4f}</td>
+          <td>{row.discounted_cashflow_10k_cny:.2f}</td>
+          <td>{row.cumulative_discounted_cashflow_10k_cny:.2f}</td>
+        </tr>
+        """
+        for row in calculation_result.annual_projections
+    )
+    rolling_monthly_full_rows = "".join(
+        f"""
+        <tr class="period-row {_period_row_class(row.period_type)}" data-period="{escape(row.period_type)}">
+          <td>{row.month_index}</td>
+          <td>{row.operating_year}</td>
+          <td>{row.month_in_year}</td>
+          <td>{_render_period_type_label(row.period_type)}</td>
+          <td>{row.generation_10k_kwh:.4f}</td>
+          <td>{row.self_consumed_10k_kwh:.4f}</td>
+          <td>{row.exported_10k_kwh:.4f}</td>
+          <td>{row.gross_revenue_10k_cny:.2f}</td>
+          <td>{row.total_cost_10k_cny:.2f}</td>
           <td>{row.input_vat_10k_cny:.2f}</td>
           <td>{row.output_vat_10k_cny:.2f}</td>
           <td>{row.vat_payable_10k_cny:.2f}</td>
@@ -545,7 +594,7 @@ def _render_result_html(context: dict[str, object]) -> str:
           <td>{row.cumulative_cashflow_10k_cny:.2f}</td>
         </tr>
         """
-        for row in calculation_result.annual_projections
+        for row in calculation_result.monthly_projections
     )
     npv_chart_svg = _build_line_chart_svg(
         [point.parameter_value for point in sensitivity.points],
@@ -623,24 +672,40 @@ def _render_result_html(context: dict[str, object]) -> str:
             <h2>计算过程与运营数据</h2>
           </div>
         </div>
-        <div class="workspace-triple">
+        <div class="workspace-triple workspace-quad">
           <section class="subpanel">
             <div class="section-head tight"><div><p class="eyebrow">Calculation Trace</p><h3>计算中间过程</h3></div></div>
             <div class="accordion-stack">
               <details class="accordion" open><summary>滚动测算基础口径</summary><div class="accordion-body"><div class="mini-grid compact"><div><span>滚动起算年发电量</span><strong>{calculation_result.initial_generation_10k_kwh:.4f} 万kWh</strong></div><div><span>余电上网电价</span><strong>{payload.tariff.feed_in_tariff:.6f} 元/kWh</strong></div><div><span>初始投资流出</span><strong>{calculation_result.initial_outflow_10k_cny:.2f} 万元</strong></div><div><span>资本开支进项税</span><strong>{calculation_result.capex_input_vat_10k_cny:.2f} 万元</strong></div></div></div></details>
               <details class="accordion" open><summary>当前滚动年度电量拆分</summary><div class="accordion-body"><div class="mini-grid compact"><div><span>当前滚动年度发电量</span><strong>{0.0 if first_year is None else first_year.generation_10k_kwh:.2f} 万kWh</strong></div><div><span>累计衰减</span><strong>{0.0 if first_year is None else first_year.degradation_pct:.2f}%</strong></div><div><span>当前滚动年度自用电量</span><strong>{0.0 if first_year is None else first_year.self_consumed_10k_kwh:.3f} 万kWh</strong></div><div><span>当前滚动年度上网电量</span><strong>{0.0 if first_year is None else first_year.exported_10k_kwh:.3f} 万kWh</strong></div></div></div></details>
-              <details class="accordion"><summary>当前滚动年度收益与税费</summary><div class="accordion-body"><div class="mini-grid compact"><div><span>当前滚动年度总收入</span><strong>{0.0 if first_year is None else first_year.gross_revenue_10k_cny:.2f} 万元</strong></div><div><span>当前滚动年度成本</span><strong>{0.0 if first_year is None else first_year.annual_cost_10k_cny:.2f} 万元</strong></div><div><span>当前滚动年度销项税</span><strong>{0.0 if first_year is None else first_year.output_vat_10k_cny:.2f} 万元</strong></div><div><span>当前滚动年度进项税</span><strong>{0.0 if first_year is None else first_year.input_vat_10k_cny:.2f} 万元</strong></div><div><span>当前滚动年度应缴增值税</span><strong>{0.0 if first_year is None else first_year.vat_payable_10k_cny:.2f} 万元</strong></div><div><span>当前滚动年度附加税</span><strong>{0.0 if first_year is None else first_year.surcharge_tax_10k_cny:.2f} 万元</strong></div></div></div></details>
+              <details class="accordion"><summary>当前滚动年度收益与税费</summary><div class="accordion-body"><div class="mini-grid compact"><div><span>当前滚动年度含税收入</span><strong>{0.0 if first_year is None else first_year.gross_revenue_10k_cny:.2f} 万元</strong></div><div><span>当前滚动年度不含税收入</span><strong>{0.0 if first_year is None else first_year.revenue_excluding_vat_10k_cny:.2f} 万元</strong></div><div><span>当前滚动年度销项税金</span><strong>{0.0 if first_year is None else first_year.output_vat_10k_cny:.2f} 万元</strong></div><div><span>当前滚动年度成本费用小计</span><strong>{0.0 if first_year is None else first_year.annual_cost_10k_cny:.2f} 万元</strong></div><div><span>当前滚动年度进项税金</span><strong>{0.0 if first_year is None else first_year.input_vat_10k_cny:.2f} 万元</strong></div><div><span>当前滚动年度应缴增值税</span><strong>{0.0 if first_year is None else first_year.annual_vat_balance_10k_cny:.2f} 万元</strong></div><div><span>当前滚动年度附加税</span><strong>{0.0 if first_year is None else first_year.surcharge_tax_10k_cny:.2f} 万元</strong></div></div></div></details>
               <details class="accordion"><summary>滚动现金流结果</summary><div class="accordion-body"><div class="mini-grid compact"><div><span>当前滚动年度净现金流</span><strong>{0.0 if first_year is None else first_year.net_cashflow_10k_cny:.2f} 万元</strong></div><div><span>当前滚动年度折现系数</span><strong>{0.0 if first_year is None else first_year.present_value_factor:.4f}</strong></div><div><span>滚动月度 IRR</span><strong>{'' if calculation_result.monthly_irr is None else f'{calculation_result.monthly_irr:.6f}'}</strong></div><div><span>项目累计净现金流</span><strong>{calculation_result.cumulative_cashflow_10k_cny:.2f} 万元</strong></div></div></div></details>
             </div>
           </section>
           <section class="subpanel">
             <div class="section-head tight"><div><p class="eyebrow">Annual Preview</p><h3>滚动测算年度汇总预览</h3></div><span class="badge">前 8 个滚动年度</span></div>
-            <div class="table-wrap compact-table"><table class="sticky-table"><thead><tr><th>年份</th><th>发电量</th><th>自用</th><th>上网</th><th>总收入</th><th>成本</th><th>增值税</th><th>附加税</th><th>净现金流</th><th>折现现金流</th></tr></thead><tbody>{annual_rows}</tbody></table></div>
-            <details class="accordion expand-table"><summary>展开查看完整 25 个滚动年度汇总</summary><div class="accordion-body"><div class="table-wrap compact-table tall-table"><table class="sticky-table"><thead><tr><th>年份</th><th>累计衰减</th><th>发电量</th><th>自用电量</th><th>上网电量</th><th>总收入</th><th>年度成本</th><th>进项税</th><th>销项税</th><th>增值税</th><th>附加税</th><th>净现金流</th><th>折现现金流</th><th>累计现金流</th></tr></thead><tbody>{annual_full_rows}</tbody></table></div></div></details>
+            <div class="table-wrap compact-table"><table class="sticky-table"><thead><tr><th>年份</th><th>发电量</th><th>含税收入</th><th>不含税收入</th><th>销项税金</th><th>成本费用小计</th><th>进项税金</th><th>应缴增值税</th><th>附加税</th><th>当期现金流</th><th>当期净现值</th></tr></thead><tbody>{annual_rows}</tbody></table></div>
+            <details class="accordion expand-table"><summary>展开查看完整 25 个滚动年度汇总</summary><div class="accordion-body"><div class="table-wrap compact-table tall-table"><table class="sticky-table"><thead><tr><th>年份</th><th>累计衰减</th><th>发电量</th><th>含税收入</th><th>不含税收入</th><th>销项税金</th><th>建造成本</th><th>租金</th><th>运维费</th><th>成本费用小计</th><th>进项税金</th><th>应缴增值税</th><th>附加税</th><th>当期现金流</th><th>累计现金净流量</th><th>现值系数</th><th>当期净现值</th><th>累计净现值</th></tr></thead><tbody>{annual_full_rows}</tbody></table></div></div></details>
+          </section>
+          <section class="subpanel">
+            <div class="section-head tight"><div><p class="eyebrow">Monthly Preview</p><h3>滚动测算月度汇总预览</h3></div><span class="badge">前 12 个滚动月份</span></div>
+            <div class="month-legend">
+              <span class="legend-pill actual">真实替换 {actual_month_count}</span>
+              <span class="legend-pill historical">历史基线 {historical_month_count}</span>
+              <span class="legend-pill projected">预测月份 {projected_month_count}</span>
+            </div>
+            <div class="filter-bar">
+              <button type="button" class="filter-chip active" data-target="monthly-preview-table" data-filter="all" onclick="filterPeriodRows(this)">全部</button>
+              <button type="button" class="filter-chip" data-target="monthly-preview-table" data-filter="actual" onclick="filterPeriodRows(this)">只看真实</button>
+              <button type="button" class="filter-chip" data-target="monthly-preview-table" data-filter="historical" onclick="filterPeriodRows(this)">只看历史</button>
+              <button type="button" class="filter-chip" data-target="monthly-preview-table" data-filter="projected" onclick="filterPeriodRows(this)">只看预测</button>
+            </div>
+            <div class="table-wrap compact-table"><table id="monthly-preview-table" class="sticky-table"><thead><tr><th>月份序号</th><th>年度</th><th>月次</th><th>类型</th><th>总收入</th><th>成本</th><th>增值税</th><th>附加税</th><th>净现金流</th><th>累计现金流</th></tr></thead><tbody>{rolling_monthly_preview_rows}</tbody></table></div>
+            <details class="accordion expand-table"><summary>展开查看完整 300 个月滚动汇总</summary><div class="accordion-body"><div class="month-legend"><span class="legend-pill actual">真实替换 {actual_month_count}</span><span class="legend-pill historical">历史基线 {historical_month_count}</span><span class="legend-pill projected">预测月份 {projected_month_count}</span></div><div class="filter-bar"><button type="button" class="filter-chip active" data-target="monthly-full-table" data-filter="all" onclick="filterPeriodRows(this)">全部</button><button type="button" class="filter-chip" data-target="monthly-full-table" data-filter="actual" onclick="filterPeriodRows(this)">只看真实</button><button type="button" class="filter-chip" data-target="monthly-full-table" data-filter="historical" onclick="filterPeriodRows(this)">只看历史</button><button type="button" class="filter-chip" data-target="monthly-full-table" data-filter="projected" onclick="filterPeriodRows(this)">只看预测</button></div><div class="table-wrap compact-table tall-table"><table id="monthly-full-table" class="sticky-table"><thead><tr><th>月份序号</th><th>年度</th><th>月次</th><th>类型</th><th>发电量</th><th>自用电量</th><th>上网电量</th><th>总收入</th><th>成本</th><th>进项税</th><th>销项税</th><th>增值税</th><th>附加税</th><th>净现金流</th><th>折现现金流</th><th>累计现金流</th></tr></thead><tbody>{rolling_monthly_full_rows}</tbody></table></div></div></details>
           </section>
           <section class="subpanel">
             <div class="section-head tight"><div><p class="eyebrow">Monthly Actuals</p><h3>最近 12 个月真实数据</h3></div><span class="badge">自动重算</span></div>
-            <div class="table-wrap compact-table"><table class="sticky-table"><thead><tr><th>月份</th><th>发电量</th><th>自用电量</th><th>上网电量</th><th>消纳率</th></tr></thead><tbody>{monthly_rows}</tbody></table></div>
+            <div class="table-wrap compact-table"><table class="sticky-table"><thead><tr><th>月份</th><th>发电量</th><th>自用电量</th><th>上网电量</th><th>消纳率</th></tr></thead><tbody>{actual_monthly_rows}</tbody></table></div>
           </section>
         </div>
       </section>
@@ -660,6 +725,22 @@ def _render_result_html(context: dict[str, object]) -> str:
       </section>
     </section>
     """
+
+
+def _render_period_type_label(period_type: str) -> str:
+    if period_type == "actual":
+        return "真实"
+    if period_type == "historical":
+        return "历史"
+    return "预测"
+
+
+def _period_row_class(period_type: str) -> str:
+    if period_type == "actual":
+        return "period-actual"
+    if period_type == "historical":
+        return "period-historical"
+    return "period-projected"
 
 
 def _render_page(
@@ -1106,6 +1187,9 @@ def _render_page(
       gap: 14px;
       align-items: start;
     }}
+    .workspace-quad {{
+      grid-template-columns: 1fr 1.05fr 1.15fr .9fr;
+    }}
     .subpanel {{
       min-width: 0;
       border: 1px solid var(--line);
@@ -1156,6 +1240,59 @@ def _render_page(
     .accordion-body {{
       padding: 0 18px 18px;
     }}
+    .month-legend {{
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-bottom: 12px;
+    }}
+    .legend-pill {{
+      display: inline-flex;
+      align-items: center;
+      padding: 7px 11px;
+      border-radius: 999px;
+      font-size: 12px;
+      font-weight: 700;
+      border: 1px solid var(--line);
+      background: rgba(255,255,255,.92);
+      color: var(--muted);
+    }}
+    .legend-pill.actual {{
+      background: rgba(15,118,110,.10);
+      color: #0f766e;
+      border-color: rgba(15,118,110,.18);
+    }}
+    .legend-pill.historical {{
+      background: rgba(37,99,235,.08);
+      color: #2563eb;
+      border-color: rgba(37,99,235,.16);
+    }}
+    .legend-pill.projected {{
+      background: rgba(100,116,139,.08);
+      color: #475569;
+      border-color: rgba(100,116,139,.14);
+    }}
+    .filter-bar {{
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-bottom: 12px;
+    }}
+    .filter-chip {{
+      padding: 8px 12px;
+      border-radius: 999px;
+      border: 1px solid var(--line-strong);
+      background: rgba(255,255,255,.9);
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 700;
+      box-shadow: none;
+    }}
+    .filter-chip.active {{
+      color: var(--accent-2);
+      border-color: rgba(37,99,235,.22);
+      background: rgba(37,99,235,.08);
+    }}
     .expand-table {{
       margin-top: 16px;
     }}
@@ -1193,6 +1330,18 @@ def _render_page(
     .sticky-table thead th:first-child {{
       z-index: 4;
       background: #eef4ff;
+    }}
+    .period-row.period-actual td {{
+      background: rgba(15,118,110,.06);
+    }}
+    .period-row.period-historical td {{
+      background: rgba(37,99,235,.04);
+    }}
+    .period-row.period-projected td {{
+      background: rgba(100,116,139,.035);
+    }}
+    .period-row.hidden-row {{
+      display: none;
     }}
     .chart-grid {{
       display: grid;
@@ -1428,6 +1577,22 @@ def _render_page(
       link.click();
       document.body.removeChild(link);
       URL.revokeObjectURL(url);
+    }}
+
+    function filterPeriodRows(button) {{
+      const targetId = button.dataset.target;
+      const filter = button.dataset.filter;
+      const table = document.getElementById(targetId);
+      if (!table) return;
+
+      const buttons = button.parentElement ? button.parentElement.querySelectorAll('.filter-chip') : [];
+      buttons.forEach((item) => item.classList.toggle('active', item === button));
+
+      const rows = table.querySelectorAll('tbody tr.period-row');
+      rows.forEach((row) => {{
+        const matched = filter === 'all' || row.dataset.period === filter;
+        row.classList.toggle('hidden-row', !matched);
+      }});
     }}
   </script>
 </body>

@@ -96,9 +96,11 @@ def parse_calculation_workbook(workbook_path: str | Path) -> dict[str, Any]:
     """Parse the feasibility workbook into the standard calculation schema."""
 
     workbook = load_workbook(workbook_path, data_only=True)
+    formula_workbook = load_workbook(workbook_path, data_only=False)
     base_sheet = workbook[PROJECT_BASE_SHEET]
-    financial_sheet = workbook[FINANCIAL_SHEET] if FINANCIAL_SHEET in workbook.sheetnames else None
+    financial_sheet = _find_financial_sheet(workbook)
     rolling_sheet = workbook[ROLLING_SHEET] if ROLLING_SHEET in workbook.sheetnames else None
+    rolling_formula_sheet = formula_workbook[ROLLING_SHEET] if ROLLING_SHEET in formula_workbook.sheetnames else None
 
     capacity_mwp = _as_float(base_sheet["C5"].value) or _as_float(base_sheet["C10"].value) or 0.0
     self_consumption_ratio = _as_float(base_sheet["C15"].value) or 0.0
@@ -108,9 +110,10 @@ def parse_calculation_workbook(workbook_path: str | Path) -> dict[str, Any]:
 
     discount_rate = None
     if financial_sheet is not None:
-        discount_rate = _as_float(financial_sheet["O5"].value)
-        if discount_rate is None:
-            discount_rate = _as_float(financial_sheet["N3"].value)
+        discount_rate = _extract_discount_rate(financial_sheet)
+    annual_output_vat_rate, annual_capex_primary_rate, annual_capex_secondary_rate = (
+        _resolve_annual_tax_profile(financial_sheet.title) if financial_sheet is not None else (0.13, 0.13, 0.09)
+    )
 
     return {
         "project": {
@@ -153,6 +156,9 @@ def parse_calculation_workbook(workbook_path: str | Path) -> dict[str, Any]:
             "output_vat_rate": 0.13,
             "input_vat_rate": 0.06,
             "surcharge_rate": 0.12,
+            "annual_output_vat_rate": annual_output_vat_rate,
+            "annual_capex_input_vat_primary_rate": annual_capex_primary_rate,
+            "annual_capex_input_vat_secondary_rate": annual_capex_secondary_rate,
         },
         "finance": {
             "discount_rate": discount_rate or 0.06,
@@ -169,6 +175,11 @@ def parse_calculation_workbook(workbook_path: str | Path) -> dict[str, Any]:
             "baseline_feed_in_revenues_10k_cny": _parse_yearly_series(base_sheet, 63, 87, 13),
             "baseline_discounted_consumer_tariff": _required_float(base_sheet["D26"].value, "项目基础数据!D26"),
             "historical_months_count": 44,
+            "forecast_q_row_numbers": _parse_forecast_q_row_numbers(
+                rolling_formula_sheet,
+                historical_months_count=44,
+                total_months=25 * 12,
+            ),
             "irr_annualization_mode": "simple",
         },
         "monthly_records": [],
@@ -182,10 +193,15 @@ def parse_station_workbook(workbook_path: str | Path) -> ParsedStationData:
     sheet = workbook[STATION_SHEET]
     data_row = _find_station_row(sheet)
 
-    generation_map = _parse_monthly_series(sheet, data_row, 8, 97)
-    self_consumed_map = _parse_monthly_series(sheet, data_row, 98, 187)
-    exported_map = _parse_monthly_series(sheet, data_row, 188, 277)
-    ratio_map = _parse_monthly_series(sheet, data_row, 368, 457)
+    generation_start = _find_station_block_start(sheet, "每月发电量（万度）", fallback=44)
+    self_consumed_start = _find_station_block_start(sheet, "每月消纳电量（万度）", fallback=134)
+    exported_start = _find_station_block_start(sheet, "每月上网电量（万度）", fallback=224)
+    ratio_start = _find_station_block_start(sheet, "每月平均消纳", fallback=404, header_row=2)
+
+    generation_map = _parse_monthly_series(sheet, data_row, generation_start, generation_start + 89)
+    self_consumed_map = _parse_monthly_series(sheet, data_row, self_consumed_start, self_consumed_start + 89)
+    exported_map = _parse_monthly_series(sheet, data_row, exported_start, exported_start + 89)
+    ratio_map = _parse_monthly_series(sheet, data_row, ratio_start, ratio_start + 89)
 
     labels = sorted(
         {
@@ -220,13 +236,31 @@ def parse_station_workbook(workbook_path: str | Path) -> ParsedStationData:
     )
 
 
+def _find_station_block_start(sheet: Any, title: str, fallback: int, header_row: int = 3) -> int:
+    """Find the first column for a station workbook metric block by header title."""
+
+    for col_idx in range(1, sheet.max_column + 1):
+        value = sheet.cell(header_row, col_idx).value
+        if isinstance(value, str) and value.strip() == title:
+            return col_idx
+    return fallback
+
+
 def _find_station_row(sheet: Any) -> int:
     """Find the first data row in the station statistics workbook."""
 
     for row_idx in range(4, sheet.max_row + 1):
         station_name = sheet.cell(row_idx, 2).value
         region = sheet.cell(row_idx, 1).value
-        if station_name not in (None, "") or region not in (None, ""):
+        if isinstance(station_name, str) and station_name.strip() == "电站名称":
+            continue
+        if isinstance(region, str) and region.strip() == "序号":
+            continue
+
+        capacity = _as_float(sheet.cell(row_idx, 6).value) or _as_float(sheet.cell(row_idx, 7).value)
+        has_monthly_value = any(_as_float(sheet.cell(row_idx, col_idx).value) is not None for col_idx in (7, 97, 187, 367))
+
+        if (station_name not in (None, "") or region not in (None, "")) and (capacity is not None or has_monthly_value):
             return row_idx
 
     raise ValueError("No station data row found in station workbook")
@@ -239,7 +273,9 @@ def _parse_monthly_series(sheet: Any, row_idx: int, start_col: int, end_col: int
     result: dict[str, float] = {}
 
     for col_idx in range(start_col, end_col + 1):
-        header = sheet.cell(3, col_idx).value
+        row4_header = sheet.cell(4, col_idx).value
+        row3_header = sheet.cell(3, col_idx).value
+        header = row4_header if _looks_like_period_header(row4_header) else row3_header
         current_year, period_label = _resolve_period_label(header, current_year)
         if period_label is None:
             continue
@@ -251,6 +287,25 @@ def _parse_monthly_series(sheet: Any, row_idx: int, start_col: int, end_col: int
         result[period_label] = value
 
     return result
+
+
+def _looks_like_period_header(value: Any) -> bool:
+    """Check whether a cell looks like a month or year header."""
+
+    if isinstance(value, datetime):
+        return True
+
+    if isinstance(value, (int, float)) and value > 30000:
+        return True
+
+    if isinstance(value, str):
+        stripped = value.strip()
+        if re.fullmatch(r"(20\d{2})年", stripped):
+            return True
+        if re.fullmatch(r"(\d{1,2})月", stripped):
+            return True
+
+    return False
 
 
 def _resolve_period_label(header_value: Any, current_year: int | None) -> tuple[int | None, str | None]:
@@ -306,6 +361,29 @@ def _parse_rolling_baseline_cashflows(sheet: Any | None) -> list[float]:
         value = _as_float(sheet.cell(row_idx, 13).value)
         values.append(value or 0.0)
     return values
+
+
+def _parse_forecast_q_row_numbers(
+    sheet: Any | None,
+    historical_months_count: int,
+    total_months: int,
+) -> list[int]:
+    """Parse forecast-month Q-row references from rolling-sheet C-column formulas."""
+
+    if sheet is None:
+        return []
+
+    start_row = 7 + historical_months_count
+    end_row = 6 + total_months
+    refs: list[int] = []
+    for row_idx in range(start_row, end_row + 1):
+        value = sheet.cell(row_idx, 3).value
+        if not isinstance(value, str):
+            continue
+        match = re.search(r"Q(\d+)\s*/\s*12", value)
+        if match is not None:
+            refs.append(int(match.group(1)))
+    return refs
 
 
 def _parse_annual_generation_forecast(base_sheet: Any, operation_years: int) -> list[float]:
@@ -384,6 +462,41 @@ def _as_str(value: Any) -> str | None:
         return None
 
     return str(value).strip()
+
+
+def _find_financial_sheet(workbook: Any) -> Any | None:
+    """Find the annual cashflow sheet across workbook naming variants."""
+
+    if FINANCIAL_SHEET in workbook.sheetnames:
+        return workbook[FINANCIAL_SHEET]
+
+    for sheet_name in workbook.sheetnames:
+        if sheet_name == ROLLING_SHEET:
+            continue
+        if "现金流量" in sheet_name:
+            return workbook[sheet_name]
+
+    return None
+
+
+def _resolve_annual_tax_profile(sheet_name: str) -> tuple[float, float, float]:
+    """Infer annual summary tax rates from the sheet naming convention."""
+
+    if "16%、10%" in sheet_name:
+        return 0.16, 0.16, 0.10
+    if "13%、9%" in sheet_name:
+        return 0.13, 0.13, 0.09
+    return 0.13, 0.13, 0.09
+
+
+def _extract_discount_rate(financial_sheet: Any) -> float | None:
+    """Extract a plausible annual discount rate from known workbook layouts."""
+
+    for cell_ref in ("O5", "N3"):
+        value = _as_float(financial_sheet[cell_ref].value)
+        if value is not None and 0 < value <= 1:
+            return value
+    return None
 
 
 def _parse_replacement_costs(financial_sheet: Any) -> dict[int, float]:

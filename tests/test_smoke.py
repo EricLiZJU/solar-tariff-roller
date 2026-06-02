@@ -115,6 +115,45 @@ def test_load_project_workbook_without_financial_sheet_still_works(tmp_path) -> 
     assert len(payload.rolling.baseline_monthly_revenues_10k_cny) == 44
 
 
+def test_load_project_workbook_handles_annual_sheet_variants(tmp_path) -> None:
+    calculation_path = tmp_path / "【测算表】测试项目.xlsx"
+    station_path = tmp_path / "电站统计.xlsx"
+
+    _build_calculation_workbook(
+        calculation_path,
+        financial_sheet_name="现金流量（16%、10%）",
+        financial_discount_rate=25.3769883,
+    )
+    _build_station_workbook(station_path)
+
+    payload = load_project_workbook(calculation_path, station_path)
+
+    assert payload.finance.discount_rate == 0.06
+    assert payload.tax.annual_output_vat_rate == 0.16
+    assert payload.tax.annual_capex_input_vat_primary_rate == 0.16
+    assert payload.tax.annual_capex_input_vat_secondary_rate == 0.10
+
+
+def test_load_project_workbook_parses_forecast_q_row_numbers(tmp_path) -> None:
+    calculation_path = tmp_path / "【测算表】测试项目.xlsx"
+    station_path = tmp_path / "电站统计.xlsx"
+
+    _build_calculation_workbook(
+        calculation_path,
+        rolling_forecast_formulas={
+            51: "=项目基础数据!Q66/12",
+            52: "=项目基础数据!Q66/12",
+            53: "=项目基础数据!Q67/12",
+            54: "=项目基础数据!Q68/12",
+        },
+    )
+    _build_station_workbook(station_path)
+
+    payload = load_project_workbook(calculation_path, station_path)
+
+    assert payload.rolling.forecast_q_row_numbers[:4] == [66, 66, 67, 68]
+
+
 def test_load_project_workbook_applies_monthly_updates_and_refreshes_ratio(tmp_path) -> None:
     calculation_path = tmp_path / "【测算表】测试项目.xlsx"
     station_path = tmp_path / "电站统计.xlsx"
@@ -211,6 +250,62 @@ def test_first_pass_calculation_engine_builds_cashflow() -> None:
     assert len(serialized["monthly_projections"]) == 36
     assert serialized["annual_projections"][0]["year"] == 1
     assert serialized["annual_projections"][1]["generation_10k_kwh"] == 76.73
+
+
+def test_actual_months_replace_predicted_months_in_rolling_chain() -> None:
+    payload = CalculationInput(
+        project={
+            "project_name": "滚动替换测试",
+            "capacity_mwp": 0.726635,
+            "operation_years": 3,
+            "grid_connection_date": "2024-01-01",
+        },
+        generation={
+            "annual_sun_hours": 1329,
+            "performance_ratio": 0.82,
+            "first_year_degradation_pct": 2.5,
+            "annual_degradation_pct": 0.6,
+        },
+        consumption={
+            "self_consumption_ratio": 0.8,
+        },
+        tariff={
+            "feed_in_tariff": 0.4153,
+            "consumer_tariff": 0.72,
+            "consumer_discount_rate": 0.88,
+        },
+        cost={
+            "capex_per_watt": 4.74,
+            "total_investment_10k_cny": 344.42499,
+            "annual_rent_10k_cny": 0,
+            "annual_om_10k_cny": 3.633175,
+        },
+        monthly_records=[
+            {
+                "period_label": "2024-01",
+                "generation_10k_kwh": 10.0,
+                "self_consumed_10k_kwh": 8.0,
+                "exported_10k_kwh": 2.0,
+            }
+        ],
+        rolling={
+            "baseline_monthly_revenues_10k_cny": [3.8] * 44,
+            "baseline_monthly_cashflows_10k_cny": [-344.42499] + [3.2] * 36,
+            "baseline_self_use_revenues_10k_cny": [39.13, 38.89, 38.65],
+            "baseline_feed_in_revenues_10k_cny": [6.41, 6.37, 6.33],
+            "baseline_discounted_consumer_tariff": 0.6336,
+            "historical_months_count": 24,
+        },
+    )
+
+    result = build_cashflow_result(payload)
+    first_month = result.monthly_projections[0]
+
+    assert first_month.period_type == "actual"
+    assert first_month.generation_10k_kwh == 10.0
+    assert first_month.self_consumed_10k_kwh == 8.0
+    assert first_month.exported_10k_kwh == 2.0
+    assert first_month.gross_revenue_10k_cny == round(8.0 * 0.6336 + 2.0 * 0.4153, 8)
 
 
 def test_export_calculation_bundle_writes_json_and_excel(tmp_path) -> None:
@@ -451,8 +546,13 @@ def test_solve_page_shows_intermediate_calculation_sections(tmp_path) -> None:
     assert response.status_code == 200
     assert "计算中间过程" in response.text
     assert "滚动测算年度汇总预览" in response.text
+    assert "滚动测算月度汇总预览" in response.text
     assert "项目概览与当前文件" in response.text
     assert "展开查看完整 25 个滚动年度汇总" in response.text
+    assert "展开查看完整 300 个月滚动汇总" in response.text
+    assert "真实替换" in response.text
+    assert "只看真实" in response.text
+    assert "filterPeriodRows" in response.text
     assert "<details class=\"accordion\"" in response.text
     assert "下载 Excel" in response.text
     assert "下载 NPV 图" in response.text
@@ -503,11 +603,17 @@ def test_post_solve_accepts_uploaded_workbooks_and_download_route(tmp_path) -> N
     )
 
 
-def _build_calculation_workbook(path, include_financial_sheet: bool = True) -> None:
+def _build_calculation_workbook(
+    path,
+    include_financial_sheet: bool = True,
+    financial_sheet_name: str = "分年现金流量表及财务指标",
+    financial_discount_rate: float = 0.06,
+    rolling_forecast_formulas: dict[int, str] | None = None,
+) -> None:
     workbook = Workbook()
     base = workbook.active
     base.title = "项目基础数据"
-    financial = workbook.create_sheet("分年现金流量表及财务指标") if include_financial_sheet else None
+    financial = workbook.create_sheet(financial_sheet_name) if include_financial_sheet else None
     rolling = workbook.create_sheet("月滚动现金流量表")
 
     base["C5"] = 0.726635
@@ -537,12 +643,15 @@ def _build_calculation_workbook(path, include_financial_sheet: bool = True) -> N
         base.cell(row_idx, 16, round(39.13 - (row_idx - 63) * 0.24, 2))  # P
 
     if financial is not None:
-        financial["O5"] = 0.06
+        financial["O5"] = financial_discount_rate
         financial["G7"] = 0.34442499
     rolling["F6"] = 344.42499
     for row_idx in range(7, 51):
         rolling.cell(row_idx, 3, 3.79583333333333)
     rolling.cell(50, 3, 3.79583333333333)
+    if rolling_forecast_formulas:
+        for row_idx, formula in rolling_forecast_formulas.items():
+            rolling.cell(row_idx, 3, formula)
     for row_idx in range(6, 307):
         rolling.cell(row_idx, 13, 3.2 if row_idx > 6 else -344.42499)
 

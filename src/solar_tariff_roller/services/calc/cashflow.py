@@ -132,6 +132,69 @@ def build_project_irr_for_discounted_tariff(payload: CalculationInput, discounte
     return round(monthly_irr * 12, 6)
 
 
+def build_project_irr_for_discounted_tariff_from_month(
+    payload: CalculationInput,
+    discounted_tariff: float,
+    start_month_index: int,
+) -> float | None:
+    """Calculate project IRR when a fixed discounted tariff starts from one rolling month."""
+
+    annual_generation = _resolve_annual_generation(payload)
+    p_values = _resolve_yearly_block(
+        payload.rolling.baseline_self_use_revenues_10k_cny,
+        [round(value * payload.discounted_consumer_tariff, 8) for value in _self_use_energy(annual_generation, payload)],
+        payload.project.operation_years,
+    )
+    m_values = _resolve_yearly_block(
+        payload.rolling.baseline_feed_in_revenues_10k_cny,
+        [round(value * payload.tariff.feed_in_tariff, 8) for value in _grid_energy(annual_generation, payload)],
+        payload.project.operation_years,
+    )
+    total_months = payload.project.operation_years * 12
+    if start_month_index < 1 or start_month_index > total_months:
+        raise ValueError("start_month_index is out of range")
+
+    base_discounted_tariff = payload.discounted_consumer_tariff
+    baseline_discounted_tariff = (
+        payload.rolling.baseline_discounted_consumer_tariff or base_discounted_tariff
+    )
+    actual_overrides = _build_actual_month_overrides(payload, base_discounted_tariff)
+    base_monthly_revenues = _build_monthly_revenues_for_discounted_tariff(
+        payload=payload,
+        discounted_tariff=base_discounted_tariff,
+        baseline_discounted_tariff=baseline_discounted_tariff,
+        annual_generation=annual_generation,
+        p_values=p_values,
+        m_values=m_values,
+        baseline_revenues=list(payload.rolling.baseline_monthly_revenues_10k_cny),
+        historical_months_count=payload.rolling.historical_months_count,
+        actual_overrides=actual_overrides,
+    )
+    adjusted_monthly_revenues = _build_monthly_revenues_for_discounted_tariff(
+        payload=payload,
+        discounted_tariff=discounted_tariff,
+        baseline_discounted_tariff=baseline_discounted_tariff,
+        annual_generation=annual_generation,
+        p_values=p_values,
+        m_values=m_values,
+        baseline_revenues=list(payload.rolling.baseline_monthly_revenues_10k_cny),
+        historical_months_count=payload.rolling.historical_months_count,
+        actual_overrides=actual_overrides,
+    )
+    monthly_revenues = list(base_monthly_revenues)
+    monthly_revenues[start_month_index - 1 :] = adjusted_monthly_revenues[start_month_index - 1 :]
+    cashflows = _build_cashflows_from_monthly_revenues(
+        payload=payload,
+        monthly_revenues=monthly_revenues,
+        insurance_per_year=round(payload.cost.total_investment_10k_cny * 0.001, 8),
+        om_half=round(payload.cost.annual_om_10k_cny / 2, 8),
+    )
+    monthly_irr = _calculate_monthly_irr(cashflows)
+    if monthly_irr is None:
+        return None
+    return round(monthly_irr * 12, 6)
+
+
 def _build_cashflows_for_discounted_tariff(
     *,
     payload: CalculationInput,
@@ -159,6 +222,23 @@ def _build_cashflows_for_discounted_tariff(
         historical_months_count=historical_months_count,
         actual_overrides=actual_overrides,
     )
+    return _build_cashflows_from_monthly_revenues(
+        payload=payload,
+        monthly_revenues=monthly_revenues,
+        insurance_per_year=insurance_per_year,
+        om_half=om_half,
+    )
+
+
+def _build_cashflows_from_monthly_revenues(
+    *,
+    payload: CalculationInput,
+    monthly_revenues: list[float],
+    insurance_per_year: float,
+    om_half: float,
+) -> list[float]:
+    """Build month-0 to month-300 cashflows from a prepared revenue series."""
+
     investment = payload.cost.total_investment_10k_cny
     cashflows = [-investment]
     vat_credit_carry = -_calc_capex_input_vat(payload)
@@ -519,8 +599,8 @@ def _build_actual_month_overrides(
             continue
 
         gross_revenue = (
-            record.self_consumed_10k_kwh * discounted_tariff
-            + record.exported_10k_kwh * payload.tariff.feed_in_tariff
+            record.self_consumed_10k_kwh * (record.self_consumption_tariff or discounted_tariff)
+            + record.exported_10k_kwh * (record.feed_in_tariff or payload.tariff.feed_in_tariff)
         )
         overrides[month_index] = {
             "generation_10k_kwh": float(record.generation_10k_kwh),

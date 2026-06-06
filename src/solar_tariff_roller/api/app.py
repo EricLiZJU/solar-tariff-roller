@@ -25,6 +25,7 @@ from solar_tariff_roller.services.parser import (
     upsert_monthly_update,
 )
 from solar_tariff_roller.services.solver import solve_tariff_by_target_irr
+from solar_tariff_roller.services.solver import solve_latest_start_month_for_tariff
 
 DEFAULT_CALCULATION_WORKBOOK = (
     "/Users/lihongyang/Library/Containers/com.tencent.xinWeChat/Data/Documents/"
@@ -37,6 +38,7 @@ DEFAULT_STATION_WORKBOOK = (
     "台州高宇液压电站发电统计表(1).xlsx"
 )
 DEFAULT_UPLOAD_DIR = Path("data/processed/uploads")
+DEFAULT_MONTHLY_FEED_IN_TARIFF = 0.4153
 SENSITIVITY_OPTIONS = {
     "tariff.consumer_tariff": "用户侧综合电价",
     "tariff.feed_in_tariff": "余电上网电价",
@@ -67,6 +69,7 @@ def create_app() -> FastAPI:
         sensitivity_start: float = Query(0.68),
         sensitivity_stop: float = Query(0.76),
         sensitivity_step: float = Query(0.04, gt=0),
+        fixed_discounted_tariff: float | None = Query(default=None, ge=0),
     ) -> str:
         try:
             context = _build_workbench_context(
@@ -77,6 +80,7 @@ def create_app() -> FastAPI:
                 sensitivity_start=sensitivity_start,
                 sensitivity_stop=sensitivity_stop,
                 sensitivity_step=sensitivity_step,
+                fixed_discounted_tariff=fixed_discounted_tariff,
             )
         except Exception as exc:  # pragma: no cover - UI fallback
             return _render_page(
@@ -88,6 +92,7 @@ def create_app() -> FastAPI:
                 sensitivity_start=sensitivity_start,
                 sensitivity_stop=sensitivity_stop,
                 sensitivity_step=sensitivity_step,
+                fixed_discounted_tariff=fixed_discounted_tariff,
             )
         return _render_page(
             result_html=_render_result_html(context),
@@ -98,6 +103,12 @@ def create_app() -> FastAPI:
             sensitivity_start=sensitivity_start,
             sensitivity_stop=sensitivity_stop,
             sensitivity_step=sensitivity_step,
+            fixed_discounted_tariff=(
+                fixed_discounted_tariff
+                if fixed_discounted_tariff is not None
+                else context["solved"].solved_discounted_consumer_tariff
+            ),
+            update_self_consumption_tariff=context["solved"].solved_discounted_consumer_tariff,
         )
 
     @app.post("/solve", response_class=HTMLResponse)
@@ -109,6 +120,7 @@ def create_app() -> FastAPI:
         sensitivity_start: float = Form(0.68),
         sensitivity_stop: float = Form(0.76),
         sensitivity_step: float = Form(0.04),
+        fixed_discounted_tariff: float | None = Form(default=None),
         calculation_workbook_file: UploadFile | None = File(default=None),
         station_workbook_file: UploadFile | None = File(default=None),
     ) -> str:
@@ -127,6 +139,7 @@ def create_app() -> FastAPI:
                 sensitivity_start=sensitivity_start,
                 sensitivity_stop=sensitivity_stop,
                 sensitivity_step=sensitivity_step,
+                fixed_discounted_tariff=fixed_discounted_tariff,
             )
         except Exception as exc:  # pragma: no cover - UI fallback
             return _render_page(
@@ -138,6 +151,7 @@ def create_app() -> FastAPI:
                 sensitivity_start=sensitivity_start,
                 sensitivity_stop=sensitivity_stop,
                 sensitivity_step=sensitivity_step,
+                fixed_discounted_tariff=fixed_discounted_tariff,
             )
         return _render_page(
             result_html=_render_result_html(context),
@@ -148,6 +162,12 @@ def create_app() -> FastAPI:
             sensitivity_start=sensitivity_start,
             sensitivity_stop=sensitivity_stop,
             sensitivity_step=sensitivity_step,
+            fixed_discounted_tariff=(
+                fixed_discounted_tariff
+                if fixed_discounted_tariff is not None
+                else context["solved"].solved_discounted_consumer_tariff
+            ),
+            update_self_consumption_tariff=context["solved"].solved_discounted_consumer_tariff,
         )
 
     @app.get("/update-monthly", response_class=HTMLResponse)
@@ -159,17 +179,22 @@ def create_app() -> FastAPI:
         sensitivity_start: float = Query(0.68),
         sensitivity_stop: float = Query(0.76),
         sensitivity_step: float = Query(0.04, gt=0),
+        fixed_discounted_tariff: float | None = Query(default=None, ge=0),
         period_label: str = Query(...),
-        generation_10k_kwh: float = Query(..., ge=0),
-        self_consumed_10k_kwh: float = Query(..., ge=0),
-        exported_10k_kwh: float = Query(..., ge=0),
+        generation_10k_kwh: float | None = Query(default=None, ge=0),
+        self_consumed_10k_kwh: float | None = Query(default=None, ge=0),
+        exported_10k_kwh: float | None = Query(default=None, ge=0),
+        self_consumption_tariff: float | None = Query(default=None, ge=0),
+        feed_in_tariff: float | None = Query(default=DEFAULT_MONTHLY_FEED_IN_TARIFF, ge=0),
     ) -> str:
         try:
-            record = MonthlyGenerationRecordInput(
+            record = _build_monthly_record_input(
                 period_label=period_label,
                 generation_10k_kwh=generation_10k_kwh,
                 self_consumed_10k_kwh=self_consumed_10k_kwh,
                 exported_10k_kwh=exported_10k_kwh,
+                self_consumption_tariff=self_consumption_tariff,
+                feed_in_tariff=feed_in_tariff,
             )
             store_path = upsert_monthly_update(
                 Path(calculation_workbook),
@@ -184,6 +209,7 @@ def create_app() -> FastAPI:
                 sensitivity_start=sensitivity_start,
                 sensitivity_stop=sensitivity_stop,
                 sensitivity_step=sensitivity_step,
+                fixed_discounted_tariff=fixed_discounted_tariff,
             )
             success = (
                 f"已保存 {period_label} 的月度真实数据，并重新完成测算。"
@@ -199,10 +225,13 @@ def create_app() -> FastAPI:
                 sensitivity_start=sensitivity_start,
                 sensitivity_stop=sensitivity_stop,
                 sensitivity_step=sensitivity_step,
+                fixed_discounted_tariff=fixed_discounted_tariff,
                 update_period_label=period_label,
                 update_generation_10k_kwh=generation_10k_kwh,
                 update_self_consumed_10k_kwh=self_consumed_10k_kwh,
                 update_exported_10k_kwh=exported_10k_kwh,
+                update_self_consumption_tariff=self_consumption_tariff,
+                update_feed_in_tariff=feed_in_tariff,
             )
 
         return _render_page(
@@ -215,10 +244,23 @@ def create_app() -> FastAPI:
             sensitivity_start=sensitivity_start,
             sensitivity_stop=sensitivity_stop,
             sensitivity_step=sensitivity_step,
+            fixed_discounted_tariff=(
+                fixed_discounted_tariff
+                if fixed_discounted_tariff is not None
+                else context["solved"].solved_discounted_consumer_tariff
+            ),
             update_period_label=period_label,
             update_generation_10k_kwh=generation_10k_kwh,
             update_self_consumed_10k_kwh=self_consumed_10k_kwh,
             update_exported_10k_kwh=exported_10k_kwh,
+            update_self_consumption_tariff=(
+                self_consumption_tariff
+                if self_consumption_tariff is not None
+                else context["solved"].solved_discounted_consumer_tariff
+            ),
+            update_feed_in_tariff=(
+                feed_in_tariff if feed_in_tariff is not None else DEFAULT_MONTHLY_FEED_IN_TARIFF
+            ),
         )
 
     @app.post("/update-monthly", response_class=HTMLResponse)
@@ -230,10 +272,13 @@ def create_app() -> FastAPI:
         sensitivity_start: float = Form(0.68),
         sensitivity_stop: float = Form(0.76),
         sensitivity_step: float = Form(0.04),
+        fixed_discounted_tariff: float | None = Form(default=None),
         period_label: str = Form(...),
-        generation_10k_kwh: float = Form(...),
-        self_consumed_10k_kwh: float = Form(...),
-        exported_10k_kwh: float = Form(...),
+        generation_10k_kwh: float | None = Form(default=None),
+        self_consumed_10k_kwh: float | None = Form(default=None),
+        exported_10k_kwh: float | None = Form(default=None),
+        self_consumption_tariff: float | None = Form(default=None),
+        feed_in_tariff: float | None = Form(default=DEFAULT_MONTHLY_FEED_IN_TARIFF),
         calculation_workbook_file: UploadFile | None = File(default=None),
         station_workbook_file: UploadFile | None = File(default=None),
     ) -> str:
@@ -244,11 +289,13 @@ def create_app() -> FastAPI:
             station_workbook_file,
         )
         try:
-            record = MonthlyGenerationRecordInput(
+            record = _build_monthly_record_input(
                 period_label=period_label,
                 generation_10k_kwh=generation_10k_kwh,
                 self_consumed_10k_kwh=self_consumed_10k_kwh,
                 exported_10k_kwh=exported_10k_kwh,
+                self_consumption_tariff=self_consumption_tariff,
+                feed_in_tariff=feed_in_tariff,
             )
             store_path = upsert_monthly_update(
                 Path(calculation_workbook),
@@ -263,6 +310,7 @@ def create_app() -> FastAPI:
                 sensitivity_start=sensitivity_start,
                 sensitivity_stop=sensitivity_stop,
                 sensitivity_step=sensitivity_step,
+                fixed_discounted_tariff=fixed_discounted_tariff,
             )
             success = (
                 f"已保存 {period_label} 的月度真实数据，并重新完成测算。"
@@ -278,10 +326,13 @@ def create_app() -> FastAPI:
                 sensitivity_start=sensitivity_start,
                 sensitivity_stop=sensitivity_stop,
                 sensitivity_step=sensitivity_step,
+                fixed_discounted_tariff=fixed_discounted_tariff,
                 update_period_label=period_label,
                 update_generation_10k_kwh=generation_10k_kwh,
                 update_self_consumed_10k_kwh=self_consumed_10k_kwh,
                 update_exported_10k_kwh=exported_10k_kwh,
+                update_self_consumption_tariff=self_consumption_tariff,
+                update_feed_in_tariff=feed_in_tariff,
             )
         return _render_page(
             result_html=_render_result_html(context),
@@ -293,10 +344,23 @@ def create_app() -> FastAPI:
             sensitivity_start=sensitivity_start,
             sensitivity_stop=sensitivity_stop,
             sensitivity_step=sensitivity_step,
+            fixed_discounted_tariff=(
+                fixed_discounted_tariff
+                if fixed_discounted_tariff is not None
+                else context["solved"].solved_discounted_consumer_tariff
+            ),
             update_period_label=period_label,
             update_generation_10k_kwh=generation_10k_kwh,
             update_self_consumed_10k_kwh=self_consumed_10k_kwh,
             update_exported_10k_kwh=exported_10k_kwh,
+            update_self_consumption_tariff=(
+                self_consumption_tariff
+                if self_consumption_tariff is not None
+                else context["solved"].solved_discounted_consumer_tariff
+            ),
+            update_feed_in_tariff=(
+                feed_in_tariff if feed_in_tariff is not None else DEFAULT_MONTHLY_FEED_IN_TARIFF
+            ),
         )
 
     @app.get("/api/solve")
@@ -308,6 +372,7 @@ def create_app() -> FastAPI:
         sensitivity_start: float = Query(0.68),
         sensitivity_stop: float = Query(0.76),
         sensitivity_step: float = Query(0.04, gt=0),
+        fixed_discounted_tariff: float | None = Query(default=None, ge=0),
     ) -> JSONResponse:
         try:
             context = _build_workbench_context(
@@ -318,11 +383,13 @@ def create_app() -> FastAPI:
                 sensitivity_start=sensitivity_start,
                 sensitivity_stop=sensitivity_stop,
                 sensitivity_step=sensitivity_step,
+                fixed_discounted_tariff=fixed_discounted_tariff,
             )
         except Exception as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
         solved = context["solved"]
+        tariff_start = context["tariff_start"]
         sensitivity = context["sensitivity"]
         exports = context["exports"]
         payload = context["payload"]
@@ -333,6 +400,23 @@ def create_app() -> FastAPI:
                 "solved_discounted_consumer_tariff": solved.solved_discounted_consumer_tariff,
                 "solved_npv_10k_cny": solved.solved_npv_10k_cny,
                 "solved_project_irr": solved.solved_project_irr,
+                "fixed_tariff_start_solution": (
+                    None
+                    if tariff_start is None
+                    else {
+                        "target_irr": tariff_start.target_irr,
+                        "discounted_consumer_tariff": tariff_start.discounted_consumer_tariff,
+                        "earliest_adjustable_month_index": tariff_start.earliest_adjustable_month_index,
+                        "earliest_adjustable_period_label": tariff_start.earliest_adjustable_period_label,
+                        "earliest_feasible_start_month_index": tariff_start.earliest_feasible_start_month_index,
+                        "earliest_feasible_start_period_label": tariff_start.earliest_feasible_start_period_label,
+                        "latest_feasible_start_month_index": tariff_start.latest_feasible_start_month_index,
+                        "latest_feasible_start_period_label": tariff_start.latest_feasible_start_period_label,
+                        "solved_project_irr": tariff_start.solved_project_irr,
+                        "reachable": tariff_start.reachable,
+                        "message": tariff_start.message,
+                    }
+                ),
                 "json_export_path": str(exports["json"]),
                 "excel_export_path": str(exports["excel"]),
                 "monthly_update_store_path": str(context["update_store_path"]),
@@ -381,6 +465,7 @@ def _build_workbench_context(
     sensitivity_start: float,
     sensitivity_stop: float,
     sensitivity_step: float,
+    fixed_discounted_tariff: float | None = None,
 ) -> dict[str, object]:
     """Run the full workbench pipeline and return render-ready context."""
 
@@ -388,6 +473,15 @@ def _build_workbench_context(
     station_path = Path(station_workbook)
     payload = load_project_workbook(calculation_path, station_path)
     solved = solve_tariff_by_target_irr(payload, target_irr=target_irr)
+    tariff_start = (
+        solve_latest_start_month_for_tariff(
+            payload,
+            discounted_consumer_tariff=fixed_discounted_tariff,
+            target_irr=target_irr,
+        )
+        if fixed_discounted_tariff is not None
+        else None
+    )
     sensitivity_values = generate_sensitivity_values(
         sensitivity_start,
         sensitivity_stop,
@@ -407,7 +501,15 @@ def _build_workbench_context(
     persisted_updates = load_monthly_updates(calculation_path, station_path)
     return {
         "payload": payload,
+        "target_irr": target_irr,
+        "calculation_workbook": calculation_workbook,
+        "station_workbook": station_workbook,
+        "sensitivity_parameter": sensitivity_parameter,
+        "sensitivity_start": sensitivity_start,
+        "sensitivity_stop": sensitivity_stop,
+        "sensitivity_step": sensitivity_step,
         "solved": solved,
+        "tariff_start": tariff_start,
         "sensitivity": sensitivity,
         "calculation_result": calculation_result,
         "exports": exports,
@@ -453,6 +555,58 @@ async def _save_uploaded_file(upload: UploadFile) -> str:
     return str(target_path.resolve())
 
 
+def _build_monthly_record_input(
+    *,
+    period_label: str,
+    generation_10k_kwh: float | None,
+    self_consumed_10k_kwh: float | None,
+    exported_10k_kwh: float | None,
+    self_consumption_tariff: float | None,
+    feed_in_tariff: float | None,
+) -> MonthlyGenerationRecordInput:
+    """Build one monthly record, auto-solving the third energy field when two are provided."""
+
+    provided_count = sum(
+        value is not None
+        for value in (generation_10k_kwh, self_consumed_10k_kwh, exported_10k_kwh)
+    )
+    if provided_count < 2:
+        raise ValueError("请至少填写总发电量、自用电量、上网电量中的任意两个值")
+
+    generation = generation_10k_kwh
+    self_consumed = self_consumed_10k_kwh
+    exported = exported_10k_kwh
+
+    if generation is None and self_consumed is not None and exported is not None:
+        generation = round(self_consumed + exported, 4)
+    if self_consumed is None and generation is not None and exported is not None:
+        self_consumed = round(generation - exported, 4)
+    if exported is None and generation is not None and self_consumed is not None:
+        exported = round(generation - self_consumed, 4)
+
+    if (
+        generation is not None
+        and self_consumed is not None
+        and exported is not None
+        and min(generation, self_consumed, exported) < -1e-9
+    ):
+        raise ValueError("自动补齐后的电量不能为负数，请检查录入值")
+
+    return MonthlyGenerationRecordInput(
+        period_label=period_label,
+        generation_10k_kwh=generation,
+        self_consumed_10k_kwh=self_consumed,
+        exported_10k_kwh=exported,
+        self_consumption_ratio=(
+            round(self_consumed / generation, 6)
+            if generation is not None and generation > 0 and self_consumed is not None
+            else None
+        ),
+        self_consumption_tariff=self_consumption_tariff,
+        feed_in_tariff=feed_in_tariff,
+    )
+
+
 def _sanitize_filename(value: str) -> str:
     sanitized = "".join(char if char.isalnum() or char in ("-", "_") else "_" for char in value)
     return sanitized.strip("_") or "upload"
@@ -477,11 +631,19 @@ def _render_result_html(context: dict[str, object]) -> str:
 
     payload = context["payload"]
     solved = context["solved"]
+    tariff_start = context["tariff_start"]
     sensitivity = context["sensitivity"]
     calculation_result = context["calculation_result"]
     exports = context["exports"]
     update_store_path = context["update_store_path"]
     persisted_updates = context["persisted_updates"]
+    target_irr = context["target_irr"]
+    calculation_workbook = context["calculation_workbook"]
+    station_workbook = context["station_workbook"]
+    sensitivity_parameter = context["sensitivity_parameter"]
+    sensitivity_start = context["sensitivity_start"]
+    sensitivity_stop = context["sensitivity_stop"]
+    sensitivity_step = context["sensitivity_step"]
     first_year = calculation_result.annual_projections[0] if calculation_result.annual_projections else None
     annual_preview = calculation_result.annual_projections[:8]
     rolling_monthly_preview = calculation_result.monthly_projections[:12]
@@ -509,6 +671,8 @@ def _render_result_html(context: dict[str, object]) -> str:
           <td>{'' if record.self_consumed_10k_kwh is None else f'{record.self_consumed_10k_kwh:.4f}'}</td>
           <td>{'' if record.exported_10k_kwh is None else f'{record.exported_10k_kwh:.4f}'}</td>
           <td>{'' if record.self_consumption_ratio is None else f'{record.self_consumption_ratio:.4%}'}</td>
+          <td>{'' if record.self_consumption_tariff is None else f'{record.self_consumption_tariff:.6f}'}</td>
+          <td>{'' if record.feed_in_tariff is None else f'{record.feed_in_tariff:.6f}'}</td>
         </tr>
         """
         for record in payload.monthly_records[-12:]
@@ -610,6 +774,47 @@ def _render_result_html(context: dict[str, object]) -> str:
     )
     excel_download_url = _build_download_url(Path(exports["excel"]))
     json_download_url = _build_download_url(Path(exports["json"]))
+    tariff_start_html = ""
+    if tariff_start is not None:
+        tariff_start_html = f"""
+      <section class="card panel-span-2">
+        <div class="section-head">
+          <div>
+            <p class="eyebrow">Tariff Start Solver</p>
+            <h2>固定消纳电价启用月份测算</h2>
+          </div>
+          <span class="badge">固定折后电价</span>
+        </div>
+        <form method="post" action="/solve" class="inline-form">
+          <input type="hidden" name="target_irr" value="{target_irr}">
+          <input type="hidden" name="calculation_workbook" value="{escape(str(calculation_workbook))}">
+          <input type="hidden" name="station_workbook" value="{escape(str(station_workbook))}">
+          <input type="hidden" name="sensitivity_parameter" value="{escape(sensitivity_parameter)}">
+          <input type="hidden" name="sensitivity_start" value="{sensitivity_start}">
+          <input type="hidden" name="sensitivity_stop" value="{sensitivity_stop}">
+          <input type="hidden" name="sensitivity_step" value="{sensitivity_step}">
+          <div class="inline-form-row">
+            <label>固定折后消纳电价
+              <input name="fixed_discounted_tariff" type="number" step="0.000001" min="0" value="{tariff_start.discounted_consumer_tariff:.6f}">
+            </label>
+            <div class="inline-form-action">
+              <button type="submit">更新启用月份测算</button>
+            </div>
+          </div>
+        </form>
+        <div class="metric-grid metric-grid-4">
+          <article class="metric accent"><span>给定折后消纳电价</span><strong>{tariff_start.discounted_consumer_tariff:.6f}</strong><em>元/kWh</em></article>
+          <article class="metric"><span>最早可调整月份</span><strong>{escape(tariff_start.earliest_adjustable_period_label or f'第{tariff_start.earliest_adjustable_month_index}个月')}</strong></article>
+          <article class="metric {'primary' if tariff_start.reachable else ''}"><span>最早达标启用月份</span><strong>{escape(tariff_start.earliest_feasible_start_period_label or ('无法达标' if not tariff_start.reachable else f'第{tariff_start.earliest_feasible_start_month_index}个月'))}</strong></article>
+          <article class="metric"><span>最晚达标启用月份</span><strong>{escape(tariff_start.latest_feasible_start_period_label or ('无法达标' if not tariff_start.reachable else f'第{tariff_start.latest_feasible_start_month_index}个月'))}</strong></article>
+        </div>
+        <div class="callout" style="margin-top:14px;">
+          <h3>结论</h3>
+          <p>{escape(tariff_start.message)}</p>
+          <p>边界口径：如果早于“最早达标启用月份”开始采用，则目标 IRR 不能满足；在达标区间内任一月份开始采用，都可以满足目标。</p>
+        </div>
+      </section>
+        """
 
     return f"""
     <section class="results-board">
@@ -643,6 +848,7 @@ def _render_result_html(context: dict[str, object]) -> str:
           <article class="metric"><span>校验滚动 IRR</span><strong>{solved.solved_project_irr:.6f}</strong></article>
         </div>
       </section>
+      {tariff_start_html}
       <section class="card panel-span-2">
         <div class="section-head">
           <div>
@@ -705,7 +911,7 @@ def _render_result_html(context: dict[str, object]) -> str:
           </section>
           <section class="subpanel">
             <div class="section-head tight"><div><p class="eyebrow">Monthly Actuals</p><h3>最近 12 个月真实数据</h3></div><span class="badge">自动重算</span></div>
-            <div class="table-wrap compact-table"><table class="sticky-table"><thead><tr><th>月份</th><th>发电量</th><th>自用电量</th><th>上网电量</th><th>消纳率</th></tr></thead><tbody>{actual_monthly_rows}</tbody></table></div>
+            <div class="table-wrap compact-table"><table class="sticky-table"><thead><tr><th>月份</th><th>发电量</th><th>自用电量</th><th>上网电量</th><th>消纳率</th><th>消纳电价</th><th>上网电价</th></tr></thead><tbody>{actual_monthly_rows}</tbody></table></div>
           </section>
         </div>
       </section>
@@ -754,10 +960,13 @@ def _render_page(
     sensitivity_start: float = 0.68,
     sensitivity_stop: float = 0.76,
     sensitivity_step: float = 0.04,
+    fixed_discounted_tariff: float | None = None,
     update_period_label: str = "",
     update_generation_10k_kwh: float | None = None,
     update_self_consumed_10k_kwh: float | None = None,
     update_exported_10k_kwh: float | None = None,
+    update_self_consumption_tariff: float | None = None,
+    update_feed_in_tariff: float | None = DEFAULT_MONTHLY_FEED_IN_TARIFF,
 ) -> str:
     """Render the single-page HTML UI."""
 
@@ -1078,6 +1287,9 @@ def _render_page(
       grid-template-columns: repeat(5, minmax(0, 1fr));
       gap: 12px;
     }}
+    .metric-grid-4 {{
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+    }}
     .metric {{
       padding: 16px;
       border-radius: 18px;
@@ -1177,6 +1389,20 @@ def _render_page(
       line-height: 1.8;
       font-size: 14px;
     }}
+    .inline-form {{
+      margin-bottom: 16px;
+    }}
+    .inline-form-row {{
+      display: grid;
+      grid-template-columns: minmax(240px, 420px) auto;
+      gap: 12px;
+      align-items: end;
+    }}
+    .inline-form-action {{
+      display: flex;
+      align-items: flex-end;
+      min-height: 100%;
+    }}
     .accordion-stack {{
       display: grid;
       gap: 14px;
@@ -1188,7 +1414,7 @@ def _render_page(
       align-items: start;
     }}
     .workspace-quad {{
-      grid-template-columns: 1fr 1.05fr 1.15fr .9fr;
+      grid-template-columns: 1fr;
     }}
     .subpanel {{
       min-width: 0;
@@ -1422,7 +1648,8 @@ def _render_page(
       .path-list.inline,
       .workspace-triple,
       .hero-strip,
-      .toolbar {{
+      .toolbar,
+      .inline-form-row {{
         grid-template-columns: 1fr;
       }}
       .wrap {{
@@ -1526,23 +1753,30 @@ def _render_page(
             <input type="hidden" name="sensitivity_start" value="{sensitivity_start}">
             <input type="hidden" name="sensitivity_stop" value="{sensitivity_stop}">
             <input type="hidden" name="sensitivity_step" value="{sensitivity_step}">
+            <input type="hidden" name="fixed_discounted_tariff" value="{'' if fixed_discounted_tariff is None else fixed_discounted_tariff}">
             <div class="form-grid">
               <label>月份
                 <input name="period_label" type="month" value="{escape(update_period_label)}">
               </label>
-              <label>发电量(万kWh)
-                <input name="generation_10k_kwh" type="number" step="0.0001" min="0" value="{'' if update_generation_10k_kwh is None else update_generation_10k_kwh}">
+              <label>总发电量(万kWh)
+                <input id="monthly_generation_10k_kwh" name="generation_10k_kwh" type="number" step="0.0001" min="0" value="{'' if update_generation_10k_kwh is None else update_generation_10k_kwh}" oninput="autoFillMonthlyEnergyFields(this.id)">
               </label>
-              <label>自用电量(万kWh)
-                <input name="self_consumed_10k_kwh" type="number" step="0.0001" min="0" value="{'' if update_self_consumed_10k_kwh is None else update_self_consumed_10k_kwh}">
+              <label>消纳电量(万kWh)
+                <input id="monthly_self_consumed_10k_kwh" name="self_consumed_10k_kwh" type="number" step="0.0001" min="0" value="{'' if update_self_consumed_10k_kwh is None else update_self_consumed_10k_kwh}" oninput="autoFillMonthlyEnergyFields(this.id)">
               </label>
-              <label>上网电量(万kWh)
-                <input name="exported_10k_kwh" type="number" step="0.0001" min="0" value="{'' if update_exported_10k_kwh is None else update_exported_10k_kwh}">
+              <label>非消纳电量/上网电量(万kWh)
+                <input id="monthly_exported_10k_kwh" name="exported_10k_kwh" type="number" step="0.0001" min="0" value="{'' if update_exported_10k_kwh is None else update_exported_10k_kwh}" oninput="autoFillMonthlyEnergyFields(this.id)">
+              </label>
+              <label>本月消纳电价(元/kWh)
+                <input name="self_consumption_tariff" type="number" step="0.000001" min="0" value="{'' if update_self_consumption_tariff is None else update_self_consumption_tariff}">
+              </label>
+              <label>本月上网电价(元/kWh)
+                <input name="feed_in_tariff" type="number" step="0.000001" min="0" value="{'' if update_feed_in_tariff is None else update_feed_in_tariff}">
               </label>
             </div>
             <input id="monthly_calculation_workbook_file" class="hidden-file" name="calculation_workbook_file" type="file" accept=".xlsx,.xls">
             <input id="monthly_station_workbook_file" class="hidden-file" name="station_workbook_file" type="file" accept=".xlsx,.xls">
-            <p class="hint">每次只更新一个月份即可。如果某个月要修正，重新录入同一个月份，系统会自动覆盖该月历史值，并重新计算最近 12 个月消纳率。</p>
+            <p class="hint">三项电量里填任意两项即可，页面会自动补第三项；保存时后端也会再次校验。月度电价允许单月覆盖，未改动时建议直接使用默认值。</p>
             <div class="actions">
               <button type="submit">保存并重算</button>
             </div>
@@ -1593,6 +1827,36 @@ def _render_page(
         const matched = filter === 'all' || row.dataset.period === filter;
         row.classList.toggle('hidden-row', !matched);
       }});
+    }}
+
+    function autoFillMonthlyEnergyFields(changedId) {{
+      const generationInput = document.getElementById('monthly_generation_10k_kwh');
+      const selfConsumedInput = document.getElementById('monthly_self_consumed_10k_kwh');
+      const exportedInput = document.getElementById('monthly_exported_10k_kwh');
+      if (!generationInput || !selfConsumedInput || !exportedInput) return;
+
+      const parseValue = (input) => {{
+        if (!input.value.trim()) return null;
+        const parsed = Number(input.value);
+        return Number.isFinite(parsed) ? parsed : null;
+      }};
+      const formatValue = (value) => value.toFixed(4).replace(/0+$/, '').replace(/\\.$/, '');
+
+      const generation = parseValue(generationInput);
+      const selfConsumed = parseValue(selfConsumedInput);
+      const exported = parseValue(exportedInput);
+
+      if (changedId !== 'monthly_generation_10k_kwh' && generation === null && selfConsumed !== null && exported !== null) {{
+        generationInput.value = formatValue(selfConsumed + exported);
+        return;
+      }}
+      if (changedId !== 'monthly_self_consumed_10k_kwh' && selfConsumed === null && generation !== null && exported !== null) {{
+        selfConsumedInput.value = formatValue(generation - exported);
+        return;
+      }}
+      if (changedId !== 'monthly_exported_10k_kwh' && exported === null && generation !== null && selfConsumed !== null) {{
+        exportedInput.value = formatValue(generation - selfConsumed);
+      }}
     }}
   </script>
 </body>

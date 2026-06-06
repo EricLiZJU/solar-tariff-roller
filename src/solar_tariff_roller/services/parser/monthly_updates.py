@@ -161,6 +161,8 @@ def _normalize_record(record: MonthlyGenerationRecordInput) -> MonthlyGeneration
         self_consumed_10k_kwh=self_consumed,
         exported_10k_kwh=exported,
         self_consumption_ratio=ratio,
+        self_consumption_tariff=record.self_consumption_tariff,
+        feed_in_tariff=record.feed_in_tariff,
     )
 
 

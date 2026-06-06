@@ -1,6 +1,9 @@
 """Calculation services."""
 
-from solar_tariff_roller.services.calc.cashflow import build_cashflow_result
+from solar_tariff_roller.services.calc.cashflow import (
+    build_cashflow_result,
+    build_project_irr_for_discounted_tariff_from_month,
+)
 from solar_tariff_roller.services.calc.engine import run_calculation
 from solar_tariff_roller.services.calc.generation import (
     calculate_total_degradation_pct,
@@ -15,6 +18,7 @@ from solar_tariff_roller.services.calc.sensitivity import (
 
 __all__ = [
     "build_cashflow_result",
+    "build_project_irr_for_discounted_tariff_from_month",
     "build_cashflow_reconciliation",
     "analyze_sensitivity",
     "calculate_total_degradation_pct",

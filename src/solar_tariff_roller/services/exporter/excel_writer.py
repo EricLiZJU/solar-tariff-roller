@@ -493,6 +493,8 @@ def _fill_monthly_sheet(sheet: Any, monthly_records: list[dict[str, Any]]) -> No
         "自用电量(万kWh)",
         "上网电量(万kWh)",
         "消纳率",
+        "消纳电价(元/kWh)",
+        "上网电价(元/kWh)",
     ]
     keys = [
         "period_label",
@@ -500,6 +502,8 @@ def _fill_monthly_sheet(sheet: Any, monthly_records: list[dict[str, Any]]) -> No
         "self_consumed_10k_kwh",
         "exported_10k_kwh",
         "self_consumption_ratio",
+        "self_consumption_tariff",
+        "feed_in_tariff",
     ]
 
     header_row = 3
@@ -516,6 +520,8 @@ def _fill_monthly_sheet(sheet: Any, monthly_records: list[dict[str, Any]]) -> No
         "C": 18,
         "D": 18,
         "E": 12,
+        "F": 16,
+        "G": 16,
     }.items():
         sheet.column_dimensions[column_letter].width = width
 

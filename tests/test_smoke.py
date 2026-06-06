@@ -12,6 +12,7 @@ from solar_tariff_roller.services.exporter import export_calculation_bundle
 from solar_tariff_roller.services.parser import upsert_monthly_update
 from solar_tariff_roller.services.parser.excel_reader import load_project_workbook
 from solar_tariff_roller.services.solver import solve_tariff_by_target_irr
+from solar_tariff_roller.services.solver import solve_latest_start_month_for_tariff
 
 from openpyxl import Workbook
 from openpyxl import load_workbook
@@ -286,6 +287,8 @@ def test_actual_months_replace_predicted_months_in_rolling_chain() -> None:
                 "generation_10k_kwh": 10.0,
                 "self_consumed_10k_kwh": 8.0,
                 "exported_10k_kwh": 2.0,
+                "self_consumption_tariff": 0.701,
+                "feed_in_tariff": 0.3678,
             }
         ],
         rolling={
@@ -305,7 +308,25 @@ def test_actual_months_replace_predicted_months_in_rolling_chain() -> None:
     assert first_month.generation_10k_kwh == 10.0
     assert first_month.self_consumed_10k_kwh == 8.0
     assert first_month.exported_10k_kwh == 2.0
-    assert first_month.gross_revenue_10k_cny == round(8.0 * 0.6336 + 2.0 * 0.4153, 8)
+    assert first_month.gross_revenue_10k_cny == round(8.0 * 0.701 + 2.0 * 0.3678, 8)
+
+
+def test_monthly_update_can_fill_the_third_energy_value() -> None:
+    from solar_tariff_roller.api.app import _build_monthly_record_input
+
+    record = _build_monthly_record_input(
+        period_label="2025-05",
+        generation_10k_kwh=12.5,
+        self_consumed_10k_kwh=9.2,
+        exported_10k_kwh=None,
+        self_consumption_tariff=0.688,
+        feed_in_tariff=0.4021,
+    )
+
+    assert record.exported_10k_kwh == 3.3
+    assert record.self_consumption_ratio == 0.736
+    assert record.self_consumption_tariff == 0.688
+    assert record.feed_in_tariff == 0.4021
 
 
 def test_export_calculation_bundle_writes_json_and_excel(tmp_path) -> None:
@@ -436,6 +457,102 @@ def test_solve_tariff_by_target_irr_recovers_current_tariff() -> None:
     assert abs(solved.solved_project_irr - 0.09) < 0.0001
 
 
+def test_solve_latest_start_month_for_tariff_finds_latest_month_when_tariff_matches_base() -> None:
+    payload = CalculationInput(
+        project={
+            "project_name": "启用月份测试",
+            "capacity_mwp": 0.726635,
+            "operation_years": 3,
+        },
+        generation={
+            "annual_sun_hours": 1329,
+            "performance_ratio": 0.82,
+        },
+        consumption={
+            "self_consumption_ratio": 0.8,
+        },
+        tariff={
+            "feed_in_tariff": 0.4153,
+            "consumer_tariff": 0.72,
+            "consumer_discount_rate": 0.88,
+        },
+        cost={
+            "capex_per_watt": 4.74,
+            "total_investment_10k_cny": 60.0,
+            "annual_om_10k_cny": 0.5,
+        },
+        rolling={
+            "baseline_monthly_revenues_10k_cny": [3.0] * 24,
+            "baseline_monthly_cashflows_10k_cny": [-60.0] + [2.8] * 36,
+            "baseline_self_use_revenues_10k_cny": [45.0, 44.5, 44.0],
+            "baseline_feed_in_revenues_10k_cny": [7.0, 6.9, 6.8],
+            "baseline_discounted_consumer_tariff": 0.6336,
+            "historical_months_count": 24,
+        },
+    )
+
+    baseline_result = build_cashflow_result(payload)
+    assert baseline_result.project_irr is not None
+
+    solved = solve_latest_start_month_for_tariff(
+        payload,
+        discounted_consumer_tariff=payload.discounted_consumer_tariff,
+        target_irr=baseline_result.project_irr - 0.000001,
+    )
+
+    assert solved.reachable is True
+    assert solved.earliest_feasible_start_month_index is not None
+    assert solved.latest_feasible_start_month_index == 36
+    assert solved.solved_project_irr is not None
+    assert solved.solved_project_irr >= baseline_result.project_irr - 0.000001
+
+
+def test_solve_latest_start_month_for_tariff_reports_unreachable_when_tariff_too_low() -> None:
+    payload = CalculationInput(
+        project={
+            "project_name": "启用月份测试",
+            "capacity_mwp": 0.726635,
+            "operation_years": 3,
+        },
+        generation={
+            "annual_sun_hours": 1329,
+            "performance_ratio": 0.82,
+        },
+        consumption={
+            "self_consumption_ratio": 0.8,
+        },
+        tariff={
+            "feed_in_tariff": 0.4153,
+            "consumer_tariff": 0.72,
+            "consumer_discount_rate": 0.88,
+        },
+        cost={
+            "capex_per_watt": 4.74,
+            "total_investment_10k_cny": 60.0,
+            "annual_om_10k_cny": 0.5,
+        },
+        rolling={
+            "baseline_monthly_revenues_10k_cny": [3.0] * 24,
+            "baseline_monthly_cashflows_10k_cny": [-60.0] + [2.8] * 36,
+            "baseline_self_use_revenues_10k_cny": [45.0, 44.5, 44.0],
+            "baseline_feed_in_revenues_10k_cny": [7.0, 6.9, 6.8],
+            "baseline_discounted_consumer_tariff": 0.6336,
+            "historical_months_count": 24,
+        },
+    )
+
+    solved = solve_latest_start_month_for_tariff(
+        payload,
+        discounted_consumer_tariff=0.0,
+        target_irr=0.45,
+    )
+
+    assert solved.reachable is False
+    assert solved.earliest_feasible_start_month_index is None
+    assert solved.latest_feasible_start_month_index is None
+    assert "过低" in solved.message
+
+
 def test_sensitivity_analysis_tracks_parameter_changes() -> None:
     payload = CalculationInput(
         project={
@@ -502,6 +619,10 @@ def test_web_page_focuses_on_desktop_workflow() -> None:
     assert "Default Port" not in html
     assert "浏览文件" in html
     assert 'type="month"' in html
+    assert "本月消纳电价" in html
+    assert "本月上网电价" in html
+    assert "三项电量里填任意两项即可" in html
+    assert "固定折后消纳电价测算" in html
     assert "结果与图表下载" not in html
     assert "使用说明" in html
     assert "工作台" in html

@@ -178,6 +178,8 @@ class MonthlyGenerationRecordInput(BaseModel):
     self_consumed_10k_kwh: float | None = Field(default=None, ge=0)
     exported_10k_kwh: float | None = Field(default=None, ge=0)
     self_consumption_ratio: float | None = Field(default=None, ge=0, le=1)
+    self_consumption_tariff: float | None = Field(default=None, ge=0, description="月度消纳电价 元/kWh")
+    feed_in_tariff: float | None = Field(default=None, ge=0, description="月度上网电价 元/kWh")
 
     @model_validator(mode="after")
     def validate_energy_balance(self) -> "MonthlyGenerationRecordInput":
